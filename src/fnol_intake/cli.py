@@ -2,19 +2,19 @@
 
 import argparse
 
-from fnol_foundation.stores import Stores, database_url
+from fnol_foundation.stores import Stores, state_dir
 
 from fnol_intake.run import DocumentMissing, IntakeError, run_intake
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Ingest FNOL cases from the mock API into Postgres.")
+    parser = argparse.ArgumentParser(description="Ingest FNOL cases from the mock API into SQLite.")
     parser.add_argument("--mock-url", required=True)
     parser.add_argument("--documents-dir", required=True)
     parser.add_argument("--policies-dir", required=True)
-    parser.add_argument("--dsn", default=None, help="Postgres DSN. Defaults to FNOL_DATABASE_URL.")
+    parser.add_argument("--state-dir", default=None, help="Directory for the SQLite files. Defaults to FNOL_STATE_DIR or .state.")
     args = parser.parse_args(argv)
-    stores = Stores(args.dsn or database_url())
+    stores = Stores(args.state_dir or state_dir())
     try:
         result = run_intake(stores, args.mock_url, args.documents_dir, args.policies_dir)
     except DocumentMissing as exc:

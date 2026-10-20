@@ -111,7 +111,7 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
         attempt=1,
     )
 
-    cases, duplicate_api_ids = _unique_cases(cases_body["cases"])
+    cases = _unique_cases(cases_body["cases"])
     loaded, missing = _read_cases(cases, documents_dir)
     if missing:
         for item in missing:
@@ -128,8 +128,10 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
             )
         raise DocumentMissing(missing)
 
-    payloads = [_payload(item, procedures, duplicate_api_ids) for item in loaded]
-    _mark_duplicate_losses(payloads)
+    stores.input.store_procedures(procedures)
+    payloads = [_payload(item) for item in loaded]
+    from server.pipeline import apply_duplicate_flags
+    apply_duplicate_flags(payloads, stores.input.latest_loss_keys())
     revisions = []
     for payload in payloads:
         started = time.perf_counter()
@@ -158,7 +160,6 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
 def _unique_cases(cases):
     ordered = []
     seen = set()
-    duplicates = []
     for case in cases:
         if not isinstance(case, dict) or not isinstance(case.get("case_id"), str):
             raise IntakeError("cases_unavailable", "case list entry is missing case_id")
@@ -166,11 +167,10 @@ def _unique_cases(cases):
             raise IntakeError("cases_unavailable", "case list entry is missing documents or intake_source")
         case_id = case["case_id"]
         if case_id in seen:
-            duplicates.append(case_id)
             continue
         seen.add(case_id)
         ordered.append(case)
-    return ordered, duplicates
+    return ordered
 
 
 def _read_cases(cases, documents_dir):
@@ -198,28 +198,33 @@ def _read_cases(cases, documents_dir):
     return loaded, missing
 
 
-def _payload(item, procedures, duplicate_api_ids):
-    raw_text = {}
+def _notes(lines):
+    if not lines:
+        return None
+    return "\n".join(lines)
+
+
+def _payload(item):
     parsed_docs = []
-    duplicate_fields = []
     intake_parsed = None
+    intake_doc = None
     estimate = None
     report = None
     for document in item["documents"]:
         kind = document_kind(document["source_id"], item["intake_source"])
         parsed = parse_document(document["raw_text"], labels_for(kind))
-        duplicate_fields.extend(parsed["duplicate_fields"])
-        raw_text[document["source_id"]] = document["raw_text"]
         entry = {
             "source_id": document["source_id"],
             "kind": kind,
             "sha256": document["sha256"],
+            "raw_text": document["raw_text"],
             "fields": parsed["fields"],
             "unlabeled_lines": parsed["unlabeled_lines"],
         }
         parsed_docs.append(entry)
         if kind == "intake" and document["source_id"] == item["intake_source"]:
             intake_parsed = parsed
+            intake_doc = entry
         elif kind == "estimate" and estimate is None:
             estimate = entry
         elif kind == "report" and report is None:
@@ -231,9 +236,12 @@ def _payload(item, procedures, duplicate_api_ids):
     location, location_supplied = supplied_value(fields.get("incident_location"))
     injury_raw, injury = yes_no(fields.get("injury_reported_raw"))
     drivable_raw, drivable = yes_no(fields.get("vehicle_drivable_raw"))
+    estimate_fields = {} if estimate is None else estimate["fields"]
+    report_fields = {} if report is None else report["fields"]
     document_set = [{"sha256": doc["sha256"], "source_id": doc["source_id"]} for doc in parsed_docs]
     return {
         "case_id": item["case_id"],
+        "document_set_sha256": digest(document_set),
         "intake_source": item["intake_source"],
         "account_text": intake_parsed["account_text"],
         "incident_timestamp": fields.get("incident_timestamp"),
@@ -250,33 +258,22 @@ def _payload(item, procedures, duplicate_api_ids):
         "vehicle_drivable": drivable,
         "referral_indicator": fields.get("referral_indicator"),
         "loss_reference": fields.get("loss_reference"),
-        "duplicate_loss": False,
-        "duplicate_case_ids": [],
-        "duplicate_api_ids": list(duplicate_api_ids),
-        "duplicate_fields": duplicate_fields,
-        "raw_text": raw_text,
-        "documents": parsed_docs,
-        "estimate": None if estimate is None else {
-            "source_id": estimate["source_id"],
-            **estimate["fields"],
-            "unlabeled_lines": estimate["unlabeled_lines"],
-        },
-        "report": None if report is None else {
-            "source_id": report["source_id"],
-            **report["fields"],
-            "unlabeled_lines": report["unlabeled_lines"],
-        },
-        "procedure_sources": procedures,
-        "document_set_sha256": digest(document_set),
+        "intake_sha256": None if intake_doc is None else intake_doc["sha256"],
+        "raw_intake": None if intake_doc is None else intake_doc["raw_text"],
+        "intake_notes": _notes(intake_parsed["unlabeled_lines"]),
+        "estimate_source_id": None if estimate is None else estimate["source_id"],
+        "estimate_sha256": None if estimate is None else estimate["sha256"],
+        "estimate_reference": estimate_fields.get("estimate_reference"),
+        "estimate_vehicle": estimate_fields.get("vehicle"),
+        "repair_amount": estimate_fields.get("repair_amount"),
+        "estimate_prepared_by": estimate_fields.get("prepared_by"),
+        "estimate_notes": None if estimate is None else _notes(estimate["unlabeled_lines"]),
+        "raw_estimate": None if estimate is None else estimate["raw_text"],
+        "report_source_id": None if report is None else report["source_id"],
+        "report_sha256": None if report is None else report["sha256"],
+        "report_vehicle_reference": report_fields.get("vehicle_reference"),
+        "report_incident_timestamp": report_fields.get("incident_timestamp"),
+        "reported_loss_type": report_fields.get("reported_loss_type"),
+        "report_notes": None if report is None else _notes(report["unlabeled_lines"]),
+        "raw_report": None if report is None else report["raw_text"],
     }
-
-
-def _mark_duplicate_losses(payloads):
-    groups = {}
-    for payload in payloads:
-        groups.setdefault(payload.get("loss_reference"), []).append(payload["case_id"])
-    for payload in payloads:
-        siblings = groups.get(payload.get("loss_reference"), [])
-        if payload.get("loss_reference") and len(siblings) > 1:
-            payload["duplicate_loss"] = True
-            payload["duplicate_case_ids"] = sorted(siblings)
