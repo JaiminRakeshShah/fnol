@@ -1,59 +1,23 @@
-"""SQLite input, output, and append-only trace stores.
+"""Postgres input, output, and append-only trace stores.
 
-Issue #1 names these files input.sqlite, output.sqlite, and trace.sqlite.
-The issue title also says Postgres; this package has no database driver and
-the acceptance criteria describe these SQLite files, so the schemas live here.
+Three schemas in one database: input.input_revisions, output.drafts, and
+trace.trace_events. Connect with a Postgres DSN. FNOL_DATABASE_URL overrides
+the local default.
 """
 
 import json
-import sqlite3
+import os
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
+
+import psycopg
+from psycopg import sql
+from psycopg.rows import dict_row
 
 from fnol_foundation.canonical import assert_no_restricted, canonical, digest
 
-INPUT_SCHEMA = """
-CREATE TABLE IF NOT EXISTS input_revisions (
-  case_id TEXT NOT NULL,
-  revision INTEGER NOT NULL,
-  ingested_at TEXT NOT NULL,
-  document_set_sha256 TEXT NOT NULL,
-  payload_json TEXT NOT NULL,
-  UNIQUE (case_id, revision)
-);
-CREATE TRIGGER IF NOT EXISTS input_revisions_no_update
-BEFORE UPDATE ON input_revisions
-BEGIN
-  SELECT RAISE(ABORT, 'input_revisions is append-only');
-END;
-CREATE TRIGGER IF NOT EXISTS input_revisions_no_delete
-BEFORE DELETE ON input_revisions
-BEGIN
-  SELECT RAISE(ABORT, 'input_revisions is append-only');
-END;
-"""
-
-OUTPUT_SCHEMA = """
-CREATE TABLE IF NOT EXISTS drafts (
-  draft_id TEXT PRIMARY KEY,
-  case_id TEXT NOT NULL,
-  input_revision INTEGER,
-  draft_json TEXT NOT NULL,
-  draft_hash TEXT NOT NULL,
-  status TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  review_id TEXT,
-  outcome TEXT
-);
-CREATE TRIGGER IF NOT EXISTS drafts_body_immutable
-BEFORE UPDATE ON drafts
-WHEN OLD.draft_json IS NOT NEW.draft_json OR OLD.draft_hash IS NOT NEW.draft_hash
-BEGIN
-  SELECT RAISE(ABORT, 'draft_json and draft_hash are immutable');
-END;
-"""
+DEFAULT_DSN = "postgresql://fnol@127.0.0.1:5432/fnol"
 
 TRACE_COLUMNS = (
     "event_id",
@@ -81,48 +45,199 @@ TRACE_COLUMNS = (
     "shadow_safety_status",
 )
 
-_TRACE_NOT_NULL = {"trace_id", "span_id", "step", "actor", "started_at", "status"}
+_TRACE_NOT_NULL = {"trace_id", "span_id", "step", "actor", "status"}
 _TRACE_INTEGER = {"input_revision", "duration_ms", "attempt", "mock_http_status", "input_tokens", "output_tokens"}
+
+
+def database_url():
+    return os.environ.get("FNOL_DATABASE_URL", DEFAULT_DSN)
+
+
+def utc_now():
+    return datetime.now(timezone.utc)
+
+
+def _as_iso(value):
+    if isinstance(value, datetime):
+        return value.isoformat()
+    return value
 
 
 def _trace_column_sql(name):
     if name == "event_id":
-        return "event_id TEXT PRIMARY KEY"
+        return "TEXT PRIMARY KEY"
+    if name == "started_at":
+        return "TIMESTAMPTZ NOT NULL"
     if name in _TRACE_NOT_NULL:
-        return f"{name} TEXT NOT NULL"
+        return "TEXT NOT NULL"
     if name in _TRACE_INTEGER:
-        return f"{name} INTEGER"
-    return f"{name} TEXT"
+        return "INTEGER"
+    return "TEXT"
 
 
-TRACE_SCHEMA = """
-CREATE TABLE IF NOT EXISTS trace_events (
-  """ + ", ".join(_trace_column_sql(name) for name in TRACE_COLUMNS) + """
-);
-CREATE TRIGGER IF NOT EXISTS trace_events_no_update
-BEFORE UPDATE ON trace_events
-BEGIN
-  SELECT RAISE(ABORT, 'trace_events is append-only');
-END;
-CREATE TRIGGER IF NOT EXISTS trace_events_no_delete
-BEFORE DELETE ON trace_events
-BEGIN
-  SELECT RAISE(ABORT, 'trace_events is append-only');
-END;
-"""
+class Stores:
+    """One Postgres database with the input, output, and trace schemas."""
+
+    def __init__(self, dsn=None, *, prefix=""):
+        if prefix and not prefix.isidentifier():
+            raise ValueError("schema prefix must be an identifier")
+        self.dsn = dsn or database_url()
+        self.schema_names = (f"{prefix}input", f"{prefix}output", f"{prefix}trace")
+        self.input_schema, self.output_schema, self.trace_schema = self.schema_names
+        self.conn = psycopg.connect(self.dsn, row_factory=dict_row, connect_timeout=5)
+        self.conn.execute("SET TIME ZONE 'UTC'")
+        self.conn.commit()
+        self._ensure_schema()
+        self.input = InputStore(self)
+        self.output = OutputStore(self)
+        self.trace = TraceStore(self)
+
+    def close(self):
+        self.conn.close()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        self.close()
+
+    def drop(self):
+        """Drop this store's schemas. Tests use a prefix so the shared schemas stay."""
+        with self.conn.transaction():
+            for name in self.schema_names:
+                self.conn.execute(sql.SQL("DROP SCHEMA IF EXISTS {} CASCADE").format(sql.Identifier(name)))
+
+    def _ensure_schema(self):
+        input_schema = sql.Identifier(self.input_schema)
+        output_schema = sql.Identifier(self.output_schema)
+        trace_schema = sql.Identifier(self.trace_schema)
+        revisions = sql.Identifier(self.input_schema, "input_revisions")
+        drafts = sql.Identifier(self.output_schema, "drafts")
+        events = sql.Identifier(self.trace_schema, "trace_events")
+        trace_columns = sql.SQL(", ").join(
+            sql.SQL("{} {}").format(sql.Identifier(name), sql.SQL(_trace_column_sql(name)))
+            for name in TRACE_COLUMNS
+        )
+        statements = [
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(input_schema),
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(output_schema),
+            sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(trace_schema),
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {} (
+                  case_id TEXT NOT NULL,
+                  revision INTEGER NOT NULL,
+                  ingested_at TIMESTAMPTZ NOT NULL,
+                  document_set_sha256 TEXT NOT NULL,
+                  payload_json TEXT NOT NULL,
+                  UNIQUE (case_id, revision)
+                )
+                """
+            ).format(revisions),
+            sql.SQL(
+                """
+                CREATE OR REPLACE FUNCTION {}.reject_mutation()
+                RETURNS trigger LANGUAGE plpgsql AS $fn$
+                BEGIN
+                  RAISE EXCEPTION 'append-only';
+                END;
+                $fn$
+                """
+            ).format(input_schema),
+            sql.SQL("DROP TRIGGER IF EXISTS revisions_no_update ON {}").format(revisions),
+            sql.SQL(
+                """
+                CREATE TRIGGER revisions_no_update
+                BEFORE UPDATE ON {}
+                FOR EACH ROW EXECUTE FUNCTION {}.reject_mutation()
+                """
+            ).format(revisions, input_schema),
+            sql.SQL("DROP TRIGGER IF EXISTS revisions_no_delete ON {}").format(revisions),
+            sql.SQL(
+                """
+                CREATE TRIGGER revisions_no_delete
+                BEFORE DELETE ON {}
+                FOR EACH ROW EXECUTE FUNCTION {}.reject_mutation()
+                """
+            ).format(revisions, input_schema),
+            sql.SQL(
+                """
+                CREATE TABLE IF NOT EXISTS {} (
+                  draft_id TEXT PRIMARY KEY,
+                  case_id TEXT NOT NULL,
+                  input_revision INTEGER,
+                  draft_json TEXT NOT NULL,
+                  draft_hash TEXT NOT NULL,
+                  status TEXT NOT NULL,
+                  created_at TIMESTAMPTZ NOT NULL,
+                  review_id TEXT,
+                  outcome TEXT
+                )
+                """
+            ).format(drafts),
+            sql.SQL(
+                """
+                CREATE OR REPLACE FUNCTION {}.reject_body_change()
+                RETURNS trigger LANGUAGE plpgsql AS $fn$
+                BEGIN
+                  IF NEW.draft_json IS DISTINCT FROM OLD.draft_json
+                     OR NEW.draft_hash IS DISTINCT FROM OLD.draft_hash THEN
+                    RAISE EXCEPTION 'draft body is immutable';
+                  END IF;
+                  RETURN NEW;
+                END;
+                $fn$
+                """
+            ).format(output_schema),
+            sql.SQL("DROP TRIGGER IF EXISTS drafts_body_immutable ON {}").format(drafts),
+            sql.SQL(
+                """
+                CREATE TRIGGER drafts_body_immutable
+                BEFORE UPDATE ON {}
+                FOR EACH ROW EXECUTE FUNCTION {}.reject_body_change()
+                """
+            ).format(drafts, output_schema),
+            sql.SQL("CREATE TABLE IF NOT EXISTS {} ({})").format(events, trace_columns),
+            sql.SQL(
+                """
+                CREATE OR REPLACE FUNCTION {}.reject_mutation()
+                RETURNS trigger LANGUAGE plpgsql AS $fn$
+                BEGIN
+                  RAISE EXCEPTION 'append-only';
+                END;
+                $fn$
+                """
+            ).format(trace_schema),
+            sql.SQL("DROP TRIGGER IF EXISTS trace_events_no_update ON {}").format(events),
+            sql.SQL(
+                """
+                CREATE TRIGGER trace_events_no_update
+                BEFORE UPDATE ON {}
+                FOR EACH ROW EXECUTE FUNCTION {}.reject_mutation()
+                """
+            ).format(events, trace_schema),
+            sql.SQL("DROP TRIGGER IF EXISTS trace_events_no_delete ON {}").format(events),
+            sql.SQL(
+                """
+                CREATE TRIGGER trace_events_no_delete
+                BEFORE DELETE ON {}
+                FOR EACH ROW EXECUTE FUNCTION {}.reject_mutation()
+                """
+            ).format(events, trace_schema),
+        ]
+        with self.conn.transaction():
+            for statement in statements:
+                self.conn.execute(statement)
 
 
-def utc_now():
-    return datetime.now(timezone.utc).isoformat()
-
-
-def connect(path):
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=15)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys = ON")
-    return db
+def _revision_from_row(row):
+    return Revision(
+        case_id=row["case_id"],
+        revision=row["revision"],
+        ingested_at=_as_iso(row["ingested_at"]),
+        document_set_sha256=row["document_set_sha256"],
+        payload=json.loads(row["payload_json"]),
+    )
 
 
 @dataclass(frozen=True)
@@ -148,10 +263,9 @@ class DraftRecord:
 
 
 class InputStore:
-    def __init__(self, path):
-        self.path = Path(path)
-        with connect(self.path) as db:
-            db.executescript(INPUT_SCHEMA)
+    def __init__(self, stores):
+        self.stores = stores
+        self.table = sql.Identifier(stores.input_schema, "input_revisions")
 
     def append_revision(self, case_id, payload, document_set_sha256=None, ingested_at=None):
         """Insert the next revision for case_id. Re-ingesting always increments."""
@@ -166,50 +280,45 @@ class InputStore:
             raise ValueError("document_set_sha256 must be a non-empty string")
         assert_no_restricted(sha)
         when = ingested_at or utc_now()
-        with connect(self.path) as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute(
-                "SELECT COALESCE(MAX(revision), 0) FROM input_revisions WHERE case_id = ?",
-                (case_id,),
-            ).fetchone()
-            revision = int(row[0]) + 1
-            db.execute(
-                """INSERT INTO input_revisions
-                   (case_id, revision, ingested_at, document_set_sha256, payload_json)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (case_id, revision, when, sha, payload_json),
+        query = sql.SQL(
+            """
+            INSERT INTO {} (case_id, revision, ingested_at, document_set_sha256, payload_json)
+            VALUES (
+              %s,
+              (SELECT COALESCE(MAX(revision), 0) + 1 FROM {} WHERE case_id = %s),
+              %s, %s, %s
             )
-        return self.get_revision(case_id, revision)
+            RETURNING *
+            """
+        ).format(self.table, self.table)
+        with self.stores.conn.transaction():
+            self.stores.conn.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended(%s, 0))",
+                (f"input:{self.stores.input_schema}:{case_id}",),
+            )
+            row = self.stores.conn.execute(query, (case_id, case_id, when, sha, payload_json)).fetchone()
+        return _revision_from_row(row)
 
     def get_revision(self, case_id, revision=None):
-        with connect(self.path) as db:
-            if revision is None:
-                row = db.execute(
-                    """SELECT * FROM input_revisions
-                       WHERE case_id = ? ORDER BY revision DESC LIMIT 1""",
-                    (case_id,),
-                ).fetchone()
-            else:
-                row = db.execute(
-                    "SELECT * FROM input_revisions WHERE case_id = ? AND revision = ?",
-                    (case_id, revision),
-                ).fetchone()
-        if row is None:
-            return None
-        return Revision(
-            case_id=row["case_id"],
-            revision=row["revision"],
-            ingested_at=row["ingested_at"],
-            document_set_sha256=row["document_set_sha256"],
-            payload=json.loads(row["payload_json"]),
-        )
+        if revision is None:
+            query = sql.SQL(
+                "SELECT * FROM {} WHERE case_id = %s ORDER BY revision DESC LIMIT 1"
+            ).format(self.table)
+            params = (case_id,)
+        else:
+            query = sql.SQL(
+                "SELECT * FROM {} WHERE case_id = %s AND revision = %s"
+            ).format(self.table)
+            params = (case_id, revision)
+        with self.stores.conn.transaction():
+            row = self.stores.conn.execute(query, params).fetchone()
+        return None if row is None else _revision_from_row(row)
 
 
 class OutputStore:
-    def __init__(self, path):
-        self.path = Path(path)
-        with connect(self.path) as db:
-            db.executescript(OUTPUT_SCHEMA)
+    def __init__(self, stores):
+        self.stores = stores
+        self.table = sql.Identifier(stores.output_schema, "drafts")
 
     def record_draft(self, case_id, draft, input_revision=None, draft_id=None, status="recorded", created_at=None):
         """Store a draft and the mock's hash of that exact object."""
@@ -222,55 +331,65 @@ class OutputStore:
         draft_hash = digest(draft)
         draft_id = draft_id or "draft_" + uuid.uuid4().hex[:12]
         when = created_at or utc_now()
-        with connect(self.path) as db:
-            db.execute(
-                """INSERT INTO drafts
-                   (draft_id, case_id, input_revision, draft_json, draft_hash, status, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (draft_id, case_id, input_revision, draft_json, draft_hash, status, when),
-            )
-        return self.get_draft(draft_id)
+        query = sql.SQL(
+            """
+            INSERT INTO {}
+              (draft_id, case_id, input_revision, draft_json, draft_hash, status, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING *
+            """
+        ).format(self.table)
+        with self.stores.conn.transaction():
+            row = self.stores.conn.execute(
+                query, (draft_id, case_id, input_revision, draft_json, draft_hash, status, when)
+            ).fetchone()
+        return _draft_from_row(row)
 
     def get_draft(self, draft_id):
-        with connect(self.path) as db:
-            row = db.execute("SELECT * FROM drafts WHERE draft_id = ?", (draft_id,)).fetchone()
-        if row is None:
-            return None
-        return DraftRecord(
-            draft_id=row["draft_id"],
-            case_id=row["case_id"],
-            input_revision=row["input_revision"],
-            draft=json.loads(row["draft_json"]),
-            draft_hash=row["draft_hash"],
-            status=row["status"],
-            created_at=row["created_at"],
-            review_id=row["review_id"],
-            outcome=row["outcome"],
-        )
+        query = sql.SQL("SELECT * FROM {} WHERE draft_id = %s").format(self.table)
+        with self.stores.conn.transaction():
+            row = self.stores.conn.execute(query, (draft_id,)).fetchone()
+        return None if row is None else _draft_from_row(row)
 
     def update_status(self, draft_id, status, review_id=None, outcome=None):
         """Record review progress. The draft body and hash stay as inserted."""
         assert_no_restricted({"status": status, "review_id": review_id, "outcome": outcome})
-        with connect(self.path) as db:
-            cur = db.execute(
-                """UPDATE drafts
-                   SET status = ?, review_id = COALESCE(?, review_id), outcome = COALESCE(?, outcome)
-                   WHERE draft_id = ?""",
-                (status, review_id, outcome, draft_id),
-            )
-            if cur.rowcount != 1:
-                raise KeyError(draft_id)
-        return self.get_draft(draft_id)
+        query = sql.SQL(
+            """
+            UPDATE {}
+            SET status = %s, review_id = COALESCE(%s, review_id), outcome = COALESCE(%s, outcome)
+            WHERE draft_id = %s
+            RETURNING *
+            """
+        ).format(self.table)
+        with self.stores.conn.transaction():
+            row = self.stores.conn.execute(query, (status, review_id, outcome, draft_id)).fetchone()
+        if row is None:
+            raise KeyError(draft_id)
+        return _draft_from_row(row)
+
+
+def _draft_from_row(row):
+    return DraftRecord(
+        draft_id=row["draft_id"],
+        case_id=row["case_id"],
+        input_revision=row["input_revision"],
+        draft=json.loads(row["draft_json"]),
+        draft_hash=row["draft_hash"],
+        status=row["status"],
+        created_at=_as_iso(row["created_at"]),
+        review_id=row["review_id"],
+        outcome=row["outcome"],
+    )
 
 
 class TraceStore:
-    def __init__(self, path):
-        self.path = Path(path)
-        with connect(self.path) as db:
-            db.executescript(TRACE_SCHEMA)
+    def __init__(self, stores):
+        self.stores = stores
+        self.table = sql.Identifier(stores.trace_schema, "trace_events")
 
     def append_event(self, **fields):
-        """Insert one trace event. Updates and deletes are rejected by the schema."""
+        """Insert one trace event. Updates and deletes are rejected by triggers."""
         event = {name: fields.get(name) for name in TRACE_COLUMNS}
         missing = [name for name in ("trace_id", "span_id", "step", "actor", "status") if not event[name]]
         if missing:
@@ -278,33 +397,35 @@ class TraceStore:
         event["event_id"] = event["event_id"] or str(uuid.uuid4())
         event["started_at"] = event["started_at"] or utc_now()
         assert_no_restricted({key: value for key, value in event.items() if value is not None})
-        columns = ", ".join(TRACE_COLUMNS)
-        placeholders = ", ".join("?" for _ in TRACE_COLUMNS)
-        with connect(self.path) as db:
-            db.execute(
-                f"INSERT INTO trace_events ({columns}) VALUES ({placeholders})",
-                tuple(event[name] for name in TRACE_COLUMNS),
-            )
-        return self.get_event(event["event_id"])
+        query = sql.SQL("INSERT INTO {} ({}) VALUES ({}) RETURNING *").format(
+            self.table,
+            sql.SQL(", ").join(sql.Identifier(name) for name in TRACE_COLUMNS),
+            sql.SQL(", ").join(sql.Placeholder() for _ in TRACE_COLUMNS),
+        )
+        with self.stores.conn.transaction():
+            row = self.stores.conn.execute(query, tuple(event[name] for name in TRACE_COLUMNS)).fetchone()
+        return _event_from_row(row)
 
     def get_event(self, event_id):
-        with connect(self.path) as db:
-            row = db.execute("SELECT * FROM trace_events WHERE event_id = ?", (event_id,)).fetchone()
-        return None if row is None else {name: row[name] for name in TRACE_COLUMNS}
+        query = sql.SQL("SELECT * FROM {} WHERE event_id = %s").format(self.table)
+        with self.stores.conn.transaction():
+            row = self.stores.conn.execute(query, (event_id,)).fetchone()
+        return None if row is None else _event_from_row(row)
 
     def column_names(self):
-        with connect(self.path) as db:
-            rows = db.execute("PRAGMA table_info(trace_events)").fetchall()
-        return tuple(row["name"] for row in rows)
+        with self.stores.conn.transaction():
+            rows = self.stores.conn.execute(
+                """
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = 'trace_events'
+                ORDER BY ordinal_position
+                """,
+                (self.stores.trace_schema,),
+            ).fetchall()
+        return tuple(row["column_name"] for row in rows)
 
 
-class Stores:
-    """The three foundation databases for one team-local state directory."""
-
-    def __init__(self, directory):
-        directory = Path(directory)
-        directory.mkdir(parents=True, exist_ok=True)
-        self.directory = directory
-        self.input = InputStore(directory / "input.sqlite")
-        self.output = OutputStore(directory / "output.sqlite")
-        self.trace = TraceStore(directory / "trace.sqlite")
+def _event_from_row(row):
+    event = {name: row[name] for name in TRACE_COLUMNS}
+    event["started_at"] = _as_iso(event["started_at"])
+    return event
