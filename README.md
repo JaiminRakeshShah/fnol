@@ -9,6 +9,30 @@ Prepare a cited personal-auto first-notice-of-loss draft and routing recommendat
 Read `BRIEF.md`, `docs/POLICY_GUIDE.md`, `docs/API.md`, `docs/OUTPUT_CONTRACT.md`, and `docs/ASSESSMENT.md`.
 Use one isolated copy and mock state database per team. The package has no third-party Python dependencies. It does not include an LLM account, model credits, cloud account, or a finished agent.
 
+### Team default: Dev Container
+
+Everyone runs the same Python 3.12 + uv environment inside Docker. Prerequisites: Docker Desktop and Cursor/VS Code with the Dev Containers extension.
+
+1. Open this folder in Cursor.
+2. **Dev Containers: Reopen in Container** (builds `.devcontainer/`, runs `uv sync --locked` and package validation).
+3. In the container terminal:
+
+```sh
+uv run --locked python tools/runtime.py serve --port 8767
+```
+
+Mock API: `http://127.0.0.1:8767` (IDE forwards the port). Keep it local. Do not publish past loopback.
+
+CLI-only alternative (same image, no IDE):
+
+```sh
+docker compose up mock
+```
+
+Compose publishes `127.0.0.1:8767` only and binds the mock to `0.0.0.0` *inside* the container network.
+
+### Host Python (optional)
+
 Install Python 3.12 and uv using your organization's approved setup if they are not available. From this directory:
 
 ```sh
@@ -17,7 +41,6 @@ uv run --locked python tools/validate_package.py
 uv run --locked python tools/runtime.py serve --port 8767
 ```
 
-The local service is at `http://127.0.0.1:8767`. It binds only to loopback. Keep it local. Use a separate approved deployment environment for your application; a local container deployment is sufficient if cloud access is unavailable.
 Python 3.12 alternative with no installation of packages: `python3.12 tools/runtime.py serve --port 8767`.
 Select this project's `.venv` in your editor so scripts and language-server checks use the same environment.
 

@@ -1,0 +1,18 @@
+# Team-local stack. Bind published ports to loopback only.
+# Dev Containers use .devcontainer/; this compose is for CLI-only Docker workflows
+# and will grow as intake / policy / rules / citations / records services land.
+services:
+  mock:
+    build:
+      context: .
+      dockerfile: .devcontainer/Dockerfile
+    working_dir: /workspaces/auto-fnol-participant
+    volumes:
+      - .:/workspaces/auto-fnol-participant
+    command: >
+      bash -lc "uv sync --locked &&
+      uv run --locked python tools/runtime.py serve --host 0.0.0.0 --port 8767"
+    ports:
+      - "127.0.0.1:8767:8767"
+    environment:
+      AI_ENABLED: "false"
