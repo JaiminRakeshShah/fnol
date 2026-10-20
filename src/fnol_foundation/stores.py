@@ -148,6 +148,17 @@ BEGIN
 END;
 """
 
+TOOL_PAYLOAD_SCHEMA = """
+CREATE TABLE IF NOT EXISTS tool_payloads (
+  case_id TEXT NOT NULL,
+  tool TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  sha256 TEXT NOT NULL,
+  stored_at TEXT NOT NULL,
+  PRIMARY KEY (case_id, tool)
+);
+"""
+
 OUTPUT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS drafts (
   draft_id TEXT PRIMARY KEY,
@@ -268,6 +279,7 @@ class InputStore:
             if "payload_json" in existing:
                 db.executescript("DROP TABLE IF EXISTS input_revisions;")
             db.executescript(INPUT_SCHEMA)
+            db.executescript(TOOL_PAYLOAD_SCHEMA)
             names = {row["name"] for row in db.execute("PRAGMA table_info(input_revisions)").fetchall()}
             if "duplicates" not in names:
                 db.execute("ALTER TABLE input_revisions ADD COLUMN duplicates INTEGER NOT NULL DEFAULT 0")
@@ -354,6 +366,44 @@ class InputStore:
                 "SELECT source_id, sha256, loaded_at FROM procedure_sources ORDER BY source_id"
             ).fetchall()
         return [{"source_id": row["source_id"], "sha256": row["sha256"], "loaded_at": row["loaded_at"]} for row in rows]
+
+    def put_tool_payload(self, case_id, tool, raw_json):
+        """Store one enterprise tool snapshot (e.g. claims) as canonical JSON."""
+        if not isinstance(case_id, str) or not case_id:
+            raise ValueError("case_id is required")
+        if not isinstance(tool, str) or not tool:
+            raise ValueError("tool is required")
+        if not isinstance(raw_json, dict):
+            raise TypeError("raw_json must be a JSON object")
+        assert_no_restricted(raw_json)
+        body = canonical(raw_json)
+        sha = digest(raw_json)
+        when = utc_now()
+        with connect(self.path) as db:
+            db.execute(
+                """INSERT INTO tool_payloads (case_id, tool, raw_json, sha256, stored_at)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(case_id, tool) DO UPDATE SET
+                     raw_json = excluded.raw_json,
+                     sha256 = excluded.sha256,
+                     stored_at = excluded.stored_at""",
+                (case_id, tool, body, sha, when),
+            )
+        return sha
+
+    def get_tool_payload(self, case_id, tool):
+        with connect(self.path) as db:
+            row = db.execute(
+                "SELECT raw_json, sha256, stored_at FROM tool_payloads WHERE case_id = ? AND tool = ?",
+                (case_id, tool),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "raw_json": json.loads(row["raw_json"]),
+            "sha256": row["sha256"],
+            "stored_at": row["stored_at"],
+        }
 
 
 class OutputStore:

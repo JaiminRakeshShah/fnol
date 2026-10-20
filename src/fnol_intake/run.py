@@ -130,7 +130,7 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
 
     stores.input.store_procedures(procedures)
     payloads = [_payload(item) for item in loaded]
-    from server.pipeline import apply_duplicate_flags
+    from fnol_intake.pipeline import apply_duplicate_flags
     apply_duplicate_flags(payloads, stores.input.latest_loss_keys())
     revisions = []
     for payload in payloads:

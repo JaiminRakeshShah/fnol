@@ -4,5 +4,13 @@ version = "1.0.0"
 description = "Fictional Associate FDE capstone simulator and fixtures"
 requires-python = ">=3.12,<3.13"
 dependencies = []
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
 [tool.uv]
 package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

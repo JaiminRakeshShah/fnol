@@ -3,7 +3,7 @@
 import json
 import sys
 
-from server.pipeline import start_ingestion
+from fnol_intake.pipeline import start_ingestion
 
 PROTOCOL = "2024-11-05"
 SERVER_INFO = {"name": "fnol-input", "version": "1.0.0"}

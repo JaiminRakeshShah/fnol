@@ -1,4 +1,4 @@
-"""One-call intake pipeline. The MCP tool and any local caller share this entry."""
+"""One-call intake pipeline. MCP and local callers share this entry."""
 
 import os
 from pathlib import Path
@@ -6,7 +6,7 @@ from pathlib import Path
 from fnol_foundation.stores import Stores, state_dir
 from fnol_intake.run import run_intake
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 
 
 def apply_duplicate_flags(payloads, existing):

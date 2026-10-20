@@ -1,1 +1,1 @@
-"""MCP input server. A client calls start_ingestion; the server writes input.sqlite."""
+"""Thin MCP shells. Domain pipelines live under src/ (fnol_intake, fnol_rules)."""
