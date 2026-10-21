@@ -19,9 +19,9 @@ SERVER_INFO = {"name": "fnol-rules", "version": "1.0.0"}
 START_ROUTING = {
     "name": "start_routing",
     "description": (
-        "Fetch claims (at most three attempts, retry only HTTP 503), store the "
-        "canonical claims JSON, and route with AUTO-TRIAGE-01. Requires an intake "
-        "revision and the policy decision for that same revision."
+        "Fetch claims, retry a transport error or HTTP 5xx at most three times, "
+        "store the canonical claims JSON, and route with AUTO-TRIAGE-01. Requires "
+        "an intake revision and the policy decision for that same revision."
     ),
     "inputSchema": {
         "type": "object",

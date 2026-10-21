@@ -196,7 +196,7 @@ BEGIN
 END;
 """
 
-_DECISION_KINDS = frozenset({"policy", "route"})
+_DECISION_KINDS = frozenset({"policy", "route", "citations"})
 
 OUTPUT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS drafts (
@@ -488,7 +488,7 @@ class InputStore:
         }
 
     def put_decision(self, case_id, input_revision, kind, body, policy_sha256=None, claims_sha256=None):
-        """Append one policy or route decision bound to an input revision."""
+        """Append one policy, route, or citations decision bound to an input revision."""
         self._require_revision(case_id, input_revision)
         if kind not in _DECISION_KINDS:
             raise ValueError("decision kind is not available")
