@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-from fnol_foundation.canonical import digest
+from fnol_foundation.canonical import EVIDENCE_TEXT_COLUMNS, RESTRICTED_MARKERS, RestrictedValueError, digest
 from fnol_foundation.events import record_event
 
 from fnol_intake.parse import (
@@ -68,7 +68,9 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
 
     Case ids and document source ids come from GET /v1/cases. A listed source
     with no file fails the run with error_code document_missing and writes no
-    revision for that case. Calling this again inserts the next revision.
+    revision for that case. A restricted marker in a structured field is dropped.
+    The raw file is still stored. One refused case does not drop the others.
+    Calling this again inserts the next revision.
     """
     fetch = transport or default_transport
     trace_id = uuid.uuid4().hex
@@ -140,16 +142,33 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
         raise DocumentMissing(missing)
 
     stores.input.store_procedures(procedures)
-    payloads = [_payload(item) for item in loaded]
+    payloads = [_scrub_structured(_payload(item)) for item in loaded]
     revisions = []
+    refused = []
     for payload in payloads:
         started = time.perf_counter()
-        revision = stores.input.append_revision(
-            payload["case_id"],
-            payload,
-            document_set_sha256=payload["document_set_sha256"],
-            trace_id=trace_id,
-        )
+        try:
+            revision = stores.input.append_revision(
+                payload["case_id"],
+                payload,
+                document_set_sha256=payload["document_set_sha256"],
+                trace_id=trace_id,
+            )
+        except RestrictedValueError:
+            record_event(
+                stores,
+                trace_id=trace_id,
+                step="1",
+                event="revision_refused",
+                actor="intake",
+                status="error",
+                case_id=payload["case_id"],
+                error_code="restricted_value",
+                started_at=_now(),
+                attempt=1,
+            )
+            refused.append(payload["case_id"])
+            continue
         record_event(
             stores,
             trace_id=trace_id,
@@ -165,7 +184,12 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
             attempt=1,
         )
         revisions.append(revision)
-    return {"trace_id": trace_id, "revisions": revisions, "procedure_sources": procedures}
+    return {
+        "trace_id": trace_id,
+        "revisions": revisions,
+        "refused": refused,
+        "procedure_sources": procedures,
+    }
 
 
 def _unique_cases(cases):
@@ -213,6 +237,32 @@ def _notes(lines):
     if not lines:
         return None
     return "\n".join(lines)
+
+
+def _restricted(value):
+    return isinstance(value, str) and any(marker in value for marker in RESTRICTED_MARKERS)
+
+
+def _scrub_structured(payload):
+    """Drop a restricted marker from structured fields. Raw document text stays.
+
+    A driver name or loss type that is itself the marker is not usable. The file
+    text is kept so a later citation can quote the safe lines and skip the marker.
+    """
+    cleaned = dict(payload)
+    for key, value in payload.items():
+        if key in EVIDENCE_TEXT_COLUMNS or not _restricted(value):
+            continue
+        cleaned[key] = None
+    if _restricted(payload.get("driver_name")):
+        cleaned["driver_name_supplied"] = False
+    if _restricted(payload.get("incident_location")):
+        cleaned["incident_location_supplied"] = False
+    if _restricted(payload.get("injury_reported_raw")):
+        cleaned["injury_reported"] = None
+    if _restricted(payload.get("vehicle_drivable_raw")):
+        cleaned["vehicle_drivable"] = None
+    return cleaned
 
 
 def _payload(item):

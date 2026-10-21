@@ -20,9 +20,10 @@ START_CITATIONS = {
     "name": "start_citations",
     "description": (
         "Slice exact quotes from the raw text and raw JSON already stored for "
-        "each intake revision. Requires the policy decision for that revision. "
-        "Omits a claims quote when the claims snapshot was not stored. Refuses "
-        "any quote that contains private_token or SYNTHETIC-PRIVATE-."
+        "each intake revision. Requires the policy decision and the route "
+        "decision for that revision. Omits a claims quote when rules stored "
+        "no claims snapshot. Refuses any quote that contains private_token "
+        "or SYNTHETIC-PRIVATE-."
     ),
     "inputSchema": {
         "type": "object",

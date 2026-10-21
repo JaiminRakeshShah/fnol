@@ -19,8 +19,8 @@ def start_citations(
 ) -> dict:
     """Slice citations for one case, or for every case with an input revision.
 
-    Reads the stored revision, the policy decision, and the snapshots rules and
-    policy already wrote. Does not call the mock.
+    Reads the stored revision, the policy decision, the route decision, and the
+    snapshots rules and policy already wrote. Does not call the mock.
     """
     directory = Path(state_dir_path) if state_dir_path is not None else state_dir()
     policies = Path(policies_dir or os.environ.get("FNOL_POLICIES_DIR", ROOT / "data" / "dev" / "policies"))

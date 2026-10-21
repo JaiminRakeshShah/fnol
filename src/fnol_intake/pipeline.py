@@ -24,4 +24,5 @@ def start_ingestion(mock_url=None, documents_dir=None, policies_dir=None, state_
             {"case_id": revision.case_id, "revision": revision.revision}
             for revision in result["revisions"]
         ],
+        "refused": list(result["refused"]),
     }

@@ -117,6 +117,77 @@ class SliceTests(unittest.TestCase):
         self.assertEqual(quote, TRIAGE_QUOTE)
         self.assertNotIn("private_token", quote)
 
+    def test_wording_quote_is_the_loss_section_not_the_form_stamp(self):
+        text = (DEV_POLICIES / "AUTO-WORDING-V2.md").read_text()
+        quote = procedure_quote("AUTO-WORDING-V2", text, "collision")
+        self.assertTrue(quote.startswith("Collision section:"))
+        self.assertIn("addressed by the collision wording", quote)
+        self.assertNotIn("Theft section:", quote)
+        self.assertNotIn("Policy form:", quote)
+        self.assertIn(quote, text)
+
+    def test_endorsement_quote_is_the_operative_sentence(self):
+        text = (DEV_POLICIES / "AUTO-END-GLASS-01.md").read_text()
+        quote = procedure_quote("AUTO-END-GLASS-01", text, "glass")
+        self.assertIn("separate review of the glass repair estimate", quote)
+        self.assertIn("authorize payment", quote)
+        self.assertNotEqual(quote, "Endorsement: GLASS-01")
+        self.assertIn(quote, text)
+
+    def test_selected_interval_is_the_policy_quote(self):
+        policies = [
+            {"version": "1", "effective_from": "2026-01-01T00:00:00Z",
+             "effective_to": "2026-09-01T00:00:00Z", "wording_source": "AUTO-WORDING-V1",
+             "endorsements": []},
+            {"version": "2", "effective_from": "2026-09-01T00:00:00Z",
+             "effective_to": "2027-01-01T00:00:00Z", "wording_source": "AUTO-WORDING-V2",
+             "endorsements": []},
+        ]
+        full = {
+            "policies": policies,
+            "policy_number": "PA-D01",
+            "private_token": "SYNTHETIC-PRIVATE-AUTO-D01",
+            "source_id": "AUTO-D01-POLICY",
+            "vehicle_id": "VEH-D01",
+        }
+        stored = {key: value for key, value in full.items() if key != "private_token"}
+        from fnol_citations.slice import policy_json_quote
+        quote = policy_json_quote(stored, "2")
+        self.assertEqual(quote, json.dumps(policies[1], sort_keys=True))
+        self.assertIn(quote, json.dumps(full, sort_keys=True))
+        self.assertNotIn("private_token", quote)
+        self.assertNotIn('"policies"', quote)
+
+    def test_claims_quote_prefers_the_duplicate_count_over_an_empty_list(self):
+        from fnol_citations.slice import claims_json_quote
+        duplicate = claims_json_quote({
+            "existing_claims": [],
+            "intake_deliveries": 2,
+            "loss_reference": "auto-loss-D10",
+            "source_id": "AUTO-D10-CLAIMS",
+        })
+        self.assertEqual(duplicate, '"intake_deliveries": 2')
+        ordinary = claims_json_quote({
+            "existing_claims": [],
+            "intake_deliveries": 1,
+            "loss_reference": "auto-loss-D01",
+            "source_id": "AUTO-D01-CLAIMS",
+        })
+        self.assertEqual(ordinary, '"loss_reference": "auto-loss-D01"')
+
+    def test_repeated_label_quotes_both_lines(self):
+        cites = _empty(revision={
+            "intake_source": "AUTO-X-INTAKE",
+            "raw_intake": "Account.\nDriver name: First Driver\nDriver name: Second Driver\n",
+            "account_text": "Account.",
+            "repeated_fields": ["driver_name"],
+        })
+        conflicts = [c["quote"] for c in cites if c["claim"] == "fact_conflict"]
+        self.assertEqual(conflicts, [
+            "Driver name: First Driver",
+            "Driver name: Second Driver",
+        ])
+
     def test_fact_conflict_cites_both_sources(self):
         cites = _empty(revision={
             "intake_source": "AUTO-X-INTAKE",
@@ -235,6 +306,15 @@ class ServiceTests(unittest.TestCase):
             },
         )
 
+    def _route_decision(self):
+        revision = self.stores.input.get_revision("AUTO-D01")
+        self.stores.input.put_decision(
+            "AUTO-D01",
+            revision.revision,
+            "route",
+            {"route": "standard", "route_rule": "AUTO-TRIAGE-01", "duplicate_delivery": False},
+        )
+
     def _events(self):
         with sqlite3.connect(self.stores.trace.path) as db:
             db.row_factory = sqlite3.Row
@@ -259,9 +339,19 @@ class ServiceTests(unittest.TestCase):
         self.assertEqual(caught.exception.error_code, "policy_decision_missing")
         self.assertEqual(self._events()[-1]["error_code"], "policy_decision_missing")
 
+    def test_missing_route_decision_is_an_error(self):
+        self._revision()
+        self._policy_decision(["AUTO-TRIAGE-01"])
+        with self.assertRaises(CitationError) as caught:
+            run_citations("AUTO-D01", self.stores, policies_dir=DEV_POLICIES)
+        self.assertEqual(caught.exception.error_code, "route_decision_missing")
+        self.assertIsNone(self.stores.input.get_decision("AUTO-D01", 1, "citations"))
+        self.assertEqual(self._events()[-1]["error_code"], "route_decision_missing")
+
     def test_hash_mismatch_omits_the_wording_quote(self):
         self._revision()
         self._policy_decision(["AUTO-TRIAGE-01"])
+        self._route_decision()
         self.stores.input.store_procedures([{"source_id": "AUTO-TRIAGE-01", "sha256": "not-the-file"}])
         out = run_citations("AUTO-D01", self.stores, policies_dir=DEV_POLICIES)
         self.assertNotIn("AUTO-TRIAGE-01", {c["source_id"] for c in out["citations"]})
@@ -274,6 +364,7 @@ class ServiceTests(unittest.TestCase):
     def test_trace_hashes_quotes_and_keeps_the_file_out(self):
         revision = self._revision()
         self._policy_decision(["AUTO-TRIAGE-01"])
+        self._route_decision()
         triage = DEV_POLICIES / "AUTO-TRIAGE-01.md"
         self.stores.input.store_procedures([
             {"source_id": "AUTO-TRIAGE-01", "sha256": file_sha256(triage.read_bytes())},
@@ -438,13 +529,16 @@ class DevGoldTests(unittest.TestCase):
         for citation in self.by_case["AUTO-D01"]["citations"]:
             by_source.setdefault(citation["source_id"], []).append(citation["quote"])
         self.assertIn(TRIAGE_QUOTE, by_source["AUTO-TRIAGE-01"])
-        self.assertIn("Policy form: HPA-2026 version 2", by_source["AUTO-WORDING-V2"])
+        wording = by_source["AUTO-WORDING-V2"]
+        self.assertTrue(any(quote.startswith("Collision section:") for quote in wording))
+        self.assertTrue(any("addressed by the collision wording" in quote for quote in wording))
         self.assertIn(
             "The car struck a roadside post while turning. I need to report the incident and understand the next steps.",
             by_source["AUTO-D01-INTAKE"],
         )
-        self.assertTrue(any(quote.startswith('"policies": [') for quote in by_source["AUTO-D01-POLICY"]))
-        self.assertIn('"existing_claims": []', by_source["AUTO-D01-CLAIMS"])
+        self.assertTrue(any('"version": "2"' in quote for quote in by_source["AUTO-D01-POLICY"]))
+        self.assertFalse(any(quote.startswith('"policies":') for quote in by_source["AUTO-D01-POLICY"]))
+        self.assertIn('"loss_reference": "auto-loss-D01"', by_source["AUTO-D01-CLAIMS"])
 
     def test_d11_estimate_quotes_the_conflicting_amount(self):
         quotes = [
@@ -462,7 +556,16 @@ class DevGoldTests(unittest.TestCase):
             c["quote"] for c in self.by_case["AUTO-D09"]["citations"]
             if c["source_id"] == "AUTO-END-GLASS-01"
         ]
-        self.assertEqual(quotes, ["Endorsement: GLASS-01"])
+        self.assertEqual(len(quotes), 1)
+        self.assertIn("separate review of the glass repair estimate", quotes[0])
+        self.assertIn(quotes[0], (DEV_POLICIES / "AUTO-END-GLASS-01.md").read_text())
+
+    def test_d10_quotes_the_duplicate_delivery_count(self):
+        quotes = [
+            c["quote"] for c in self.by_case["AUTO-D10"]["citations"]
+            if c["source_id"] == "AUTO-D10-CLAIMS"
+        ]
+        self.assertIn('"intake_deliveries": 2', quotes)
 
     def test_trace_stores_the_hash_and_not_the_file(self):
         with sqlite3.connect(self.state / "trace.sqlite") as db:

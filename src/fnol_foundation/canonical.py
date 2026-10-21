@@ -10,6 +10,18 @@ import json
 
 RESTRICTED_MARKERS = ("private_token", "SYNTHETIC-PRIVATE-")
 
+# Verbatim source text. A marker may sit in these columns because the file is the evidence.
+# Every other stored field is refused, and events never receive these columns.
+EVIDENCE_TEXT_COLUMNS = frozenset({
+    "account_text",
+    "raw_intake",
+    "intake_notes",
+    "raw_estimate",
+    "estimate_notes",
+    "raw_report",
+    "report_notes",
+})
+
 
 def canonical(value):
     """Return the mock's canonical JSON form of value."""

@@ -13,7 +13,13 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fnol_foundation.canonical import assert_no_restricted, canonical, digest, redact_for_store
+from fnol_foundation.canonical import (
+    EVIDENCE_TEXT_COLUMNS,
+    assert_no_restricted,
+    canonical,
+    digest,
+    redact_for_store,
+)
 
 TRACE_COLUMNS = (
     "event_id",
@@ -353,12 +359,18 @@ class InputStore:
             db.executescript(DECISION_SCHEMA)
 
     def append_revision(self, case_id, payload, document_set_sha256=None, ingested_at=None, trace_id=None):
-        """Insert the next revision for case_id. Re-ingesting always increments."""
+        """Insert the next revision for case_id. Re-ingesting always increments.
+
+        Raw document columns may contain a restricted marker. Structured fields may not.
+        Callers must not copy the raw columns into the trace.
+        """
         if not isinstance(case_id, str) or not case_id:
             raise ValueError("case_id is required")
         if not isinstance(payload, dict):
             raise TypeError("payload must be a JSON object")
-        assert_no_restricted(payload)
+        assert_no_restricted({
+            key: value for key, value in payload.items() if key not in EVIDENCE_TEXT_COLUMNS
+        })
         sha = document_set_sha256 if document_set_sha256 is not None else digest(payload)
         if not isinstance(sha, str) or not sha:
             raise ValueError("document_set_sha256 must be a non-empty string")

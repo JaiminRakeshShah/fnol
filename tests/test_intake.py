@@ -160,6 +160,69 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(payload["driver_name"], "First Driver")
         self.assertEqual(payload["repeated_fields"], ["driver_name"])
         self.assertEqual(result["revisions"][0].trace_id, result["trace_id"])
+        self.assertEqual(result["refused"], [])
+
+    def test_marker_in_the_file_is_kept_as_evidence_and_does_not_stop_the_batch(self):
+        with tempfile.TemporaryDirectory() as docs:
+            hostile = textwrap.dedent("""\
+                # Notice
+
+                Source ID: CASE-A-INTAKE
+
+                The note names SYNTHETIC-PRIVATE-CASE-A and must not be copied into the trace.
+
+                Incident timestamp: 2026-10-01T12:00:00Z
+                Policy number: PA-A
+                Vehicle ID: VEH-A
+                Loss type: collision
+                Driver name: SYNTHETIC-PRIVATE-CASE-A
+                Incident location: Cedar Street
+                Injury reported: no
+                Vehicle drivable: yes
+                Referral indicator: none
+                Loss reference: loss-a
+            """)
+            clean = textwrap.dedent("""\
+                # Notice
+
+                Source ID: CASE-B-INTAKE
+
+                A parked car was struck.
+
+                Incident timestamp: 2026-10-01T12:00:00Z
+                Policy number: PA-B
+                Vehicle ID: VEH-B
+                Loss type: collision
+                Driver name: Alex Rowan
+                Incident location: Cedar Street
+                Injury reported: no
+                Vehicle drivable: yes
+                Referral indicator: none
+                Loss reference: loss-b
+            """)
+            (Path(docs) / "CASE-A-INTAKE.md").write_text(hostile)
+            (Path(docs) / "CASE-B-INTAKE.md").write_text(clean)
+            result = run_intake(
+                self.stores, "http://mock", docs, DEV_POLICIES,
+                transport=_transport(
+                    (200, {"status": "ok"}),
+                    (200, {"cases": [
+                        {"case_id": "CASE-A", "intake_source": "CASE-A-INTAKE", "documents": ["CASE-A-INTAKE"]},
+                        {"case_id": "CASE-B", "intake_source": "CASE-B-INTAKE", "documents": ["CASE-B-INTAKE"]},
+                    ]}),
+                ),
+            )
+        by_id = {revision.case_id: revision for revision in result["revisions"]}
+        self.assertEqual(set(by_id), {"CASE-A", "CASE-B"})
+        self.assertEqual(result["refused"], [])
+        hostile_payload = by_id["CASE-A"].payload
+        self.assertIn("SYNTHETIC-PRIVATE-CASE-A", hostile_payload["raw_intake"])
+        self.assertIsNone(hostile_payload["driver_name"])
+        self.assertFalse(hostile_payload["driver_name_supplied"])
+        self.assertEqual(hostile_payload["loss_type"], "collision")
+        self.assertEqual(by_id["CASE-B"].payload["driver_name"], "Alex Rowan")
+        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"private_token", self.stores.trace.path.read_bytes())
 
     def test_missing_document_writes_no_revision(self):
         with tempfile.TemporaryDirectory() as tmp:

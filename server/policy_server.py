@@ -22,7 +22,7 @@ START_POLICY = {
         "GET policy for each intake revision, drop private_token, and store the "
         "canonical JSON on that revision. Select the single interval containing "
         "the incident. Zero or several matches store a null version. A wording "
-        "file intake did not load is omitted from policy_ids."
+        "file that intake did not load is omitted from policy_ids."
     ),
     "inputSchema": {
         "type": "object",

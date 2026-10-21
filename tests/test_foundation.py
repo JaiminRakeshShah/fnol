@@ -108,6 +108,15 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(sqlite3.IntegrityError):
                 db.execute("UPDATE drafts SET draft_json = '{}' WHERE draft_id = 'draft_test'")
 
+    def test_raw_evidence_may_contain_the_marker(self):
+        row = self.stores.input.append_revision("AUTO-D01", {
+            "loss_type": "collision",
+            "raw_intake": "Account mentions SYNTHETIC-PRIVATE-AUTO-D01\nLoss type: collision\n",
+        })
+        self.assertIn("SYNTHETIC-PRIVATE-AUTO-D01", row.payload["raw_intake"])
+        with self.assertRaises(RestrictedValueError):
+            self.stores.input.append_revision("AUTO-D02", {"driver_name": "SYNTHETIC-PRIVATE-AUTO-D02"})
+
     def test_restricted_markers_are_refused(self):
         with self.assertRaises(RestrictedValueError):
             self.stores.input.append_revision("AUTO-D01", {"private_token": "secret"})

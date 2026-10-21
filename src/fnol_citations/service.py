@@ -62,8 +62,10 @@ def run_citations(
 ) -> dict:
     """Slice citations for one case from its latest revision and tool snapshots.
 
-    policy_ids come from the stored policy decision. A claims snapshot that
-    rules never stored produces no claims citation.
+    Requires the policy decision and the route decision for that revision.
+    A claims snapshot that rules stored as unavailable produces no claims
+    citation. Citing before rules have run is refused, so a missing claims
+    row is not frozen as if the service had failed.
     """
     started = time.perf_counter()
     revision = stores.input.get_revision(case_id)
@@ -111,6 +113,26 @@ def run_citations(
         )
         raise CitationError("policy_ids_missing", f"policy decision for {case_id} has no policy_ids")
 
+    route = stores.input.get_decision(case_id, revision.revision, "route")
+    if route is None:
+        _event(
+            stores,
+            trace_id=trace_id,
+            case_id=case_id,
+            revision=revision,
+            citations=None,
+            started=started,
+            status="error",
+            error_code="route_decision_missing",
+        )
+        raise CitationError(
+            "route_decision_missing",
+            f"no route decision for {case_id} revision {revision.revision}",
+        )
+    version = decision["body"].get("selected_policy_version")
+    if not isinstance(version, str) or not version:
+        version = None
+
     policy_row = stores.input.get_tool_payload(case_id, "policy", revision.revision)
     claims_row = stores.input.get_tool_payload(case_id, "claims", revision.revision)
     policy_payload = None if policy_row is None else policy_row["raw_json"]
@@ -127,6 +149,7 @@ def run_citations(
             procedure_text=texts,
             policy_payload=policy_payload,
             claims_payload=claims_payload,
+            selected_policy_version=version,
         ))
     except RestrictedValueError:
         _event(
