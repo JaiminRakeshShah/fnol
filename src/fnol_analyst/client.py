@@ -1,9 +1,8 @@
-"""AnalystClient: drive the four step servers and write the deterministic draft.
+"""AnalystClient: drive the step servers, build the draft, and submit for review.
 
-Steps 1-4 are delegated to the step servers (independent calls, pipelined
-across cases). Step 5 builds the draft from stored decisions only. Step 8
-hashes it with the mock's canonical form, writes output.sqlite, and exports
-the contract JSON. Review, records, and the Bedrock shadow path are not here.
+Steps 1-4 are delegated to the step servers. Step 5 builds the deterministic
+narrative. Steps 6-7 optionally fill evidence_summary behind FNOL_AI_ENABLED.
+Step 8 hashes and records. Steps 9-12 live in submit.py and never call approve.
 """
 
 from __future__ import annotations
@@ -13,21 +12,40 @@ import os
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from fnol_analyst.draft import FACT_COLUMNS, build_draft
+from fnol_analyst.http import default_transport
 from fnol_analyst.servers import ServerSet
-from fnol_foundation.canonical import RestrictedValueError, digest
+from fnol_analyst.submit import (
+    SubmitError,
+    edit_draft,
+    file_record,
+    poll_review,
+    submit_review,
+)
+from fnol_foundation.canonical import RestrictedValueError, assert_no_restricted, digest
 from fnol_foundation.events import record_event
 from fnol_foundation.stores import DraftRecord, Stores, state_dir
+from fnol_shadow.errors import ShadowError
+from fnol_shadow.packet import STRUCTURED_FACTS, build_packet, packet_text
+from fnol_shadow.pipeline import _generate, load_settings, resolve_system_prompt
+from fnol_shadow.provision import ControlClient
 
 ACTOR = "analyst"
+
+Transport = Callable[[str, str, dict | None, dict[str, str] | None], tuple[int, dict[str, Any]]]
+ShadowChat = Callable[[str, str], Any]
 
 
 class AnalystError(Exception):
     def __init__(self, error_code: str, message: str):
         super().__init__(message)
         self.error_code = error_code
+
+
+def ai_enabled() -> bool:
+    return os.environ.get("FNOL_AI_ENABLED", "").strip() == "1"
 
 
 class AnalystClient:
@@ -38,6 +56,9 @@ class AnalystClient:
         state_dir_path: str | Path | None = None,
         documents_dir: str | Path | None = None,
         policies_dir: str | Path | None = None,
+        transport: Transport | None = None,
+        shadow_chat: ShadowChat | None = None,
+        shadow_model_id: str | None = None,
     ):
         self.mock_url = (mock_url or os.environ.get("FNOL_MOCK_URL", "http://127.0.0.1:8767")).rstrip("/")
         self.state_dir = Path(state_dir_path) if state_dir_path is not None else state_dir()
@@ -45,6 +66,9 @@ class AnalystClient:
         self.policies_dir = Path(policies_dir) if policies_dir else None
         self.stores = Stores(self.state_dir)
         self._servers: ServerSet | None = None
+        self._transport = transport
+        self._shadow_chat = shadow_chat
+        self._shadow_model_id = shadow_model_id or "test-model"
 
     @property
     def servers(self) -> ServerSet:
@@ -95,10 +119,13 @@ class AnalystClient:
         return {"ingest": ingest, "cases": cases}
 
     def build(self, case_id: str) -> DraftRecord:
-        """Steps 5 and 8 for one case. Reuses an identical latest draft."""
+        """Steps 5-8. Reuses a recorded draft for the same input revision."""
         revision = self.stores.input.get_revision(case_id)
         if revision is None:
             raise AnalystError("revision_missing", f"no input revision for {case_id}")
+        existing = self.stores.output.latest_draft(case_id)
+        if existing is not None and existing.input_revision == revision.revision:
+            return existing
         decisions = {}
         for kind in ("policy", "route", "citations"):
             row = self.stores.input.get_decision(case_id, revision.revision, kind)
@@ -118,6 +145,8 @@ class AnalystClient:
                 policy=decisions["policy"],
                 route=decisions["route"],
                 citations=decisions["citations"],
+                evidence_summary=None,
+                safety_status="skipped",
             )
         except RestrictedValueError:
             self._event(
@@ -125,14 +154,18 @@ class AnalystClient:
                 status="error", error_code="restricted_value", started=started,
             )
             raise AnalystError("restricted_value", "draft refused: restricted value") from None
-        draft_hash = digest(draft)
-        existing = self.stores.output.latest_draft(case_id)
-        if existing is not None and existing.draft_hash == draft_hash:
-            return existing
         self._event(
             trace_id, "5", "draft_built", case_id, revision.revision, None,
-            status="ok", output_sha256=draft_hash, started=started,
+            status="ok", output_sha256=digest(draft), started=started,
         )
+        if ai_enabled():
+            draft = self._fill_evidence_summary(
+                draft,
+                case_id=case_id,
+                revision=revision,
+                decisions=decisions,
+                trace_id=trace_id,
+            )
         started = time.perf_counter()
         record = self.stores.output.record_draft(case_id, draft, input_revision=revision.revision)
         self._event(
@@ -160,6 +193,193 @@ class AnalystClient:
         target.write_text(json.dumps(rows, indent=2, ensure_ascii=False) + "\n")
         return target
 
+    def submit(self, case_id: str) -> DraftRecord:
+        """Step 9. POST /v1/reviews for the stored draft."""
+        try:
+            return submit_review(
+                self.stores,
+                case_id=case_id,
+                base_url=self.mock_url,
+                transport=self._call_transport,
+                trace_id=self._trace_id(case_id),
+            )
+        except SubmitError as exc:
+            raise AnalystError(exc.error_code, str(exc)) from None
+
+    def review_status(self, case_id: str) -> dict[str, Any]:
+        """Step 10. Poll the human decision. Never calls approve."""
+        try:
+            return poll_review(
+                self.stores,
+                case_id=case_id,
+                base_url=self.mock_url,
+                transport=self._call_transport,
+                trace_id=self._trace_id(case_id),
+            )
+        except SubmitError as exc:
+            raise AnalystError(exc.error_code, str(exc)) from None
+
+    def edit(
+        self,
+        case_id: str,
+        *,
+        narrative: str | None = None,
+        evidence_summary: str | None = None,
+        clear_evidence_summary: bool = False,
+    ) -> DraftRecord:
+        """Local edit: new draft_id and hash. Old approval is void."""
+        try:
+            return edit_draft(
+                self.stores,
+                case_id=case_id,
+                narrative=narrative,
+                evidence_summary=evidence_summary,
+                clear_evidence_summary=clear_evidence_summary,
+                trace_id=self._trace_id(case_id),
+            )
+        except SubmitError as exc:
+            raise AnalystError(exc.error_code, str(exc)) from None
+
+    def file(self, case_id: str) -> dict[str, Any]:
+        """Steps 11-12. Duplicate check then POST /v1/records."""
+        try:
+            return file_record(
+                self.stores,
+                case_id=case_id,
+                base_url=self.mock_url,
+                transport=self._call_transport,
+                trace_id=self._trace_id(case_id),
+            )
+        except SubmitError as exc:
+            raise AnalystError(exc.error_code, str(exc)) from None
+
+    def _fill_evidence_summary(
+        self,
+        draft: dict[str, Any],
+        *,
+        case_id: str,
+        revision,
+        decisions: dict[str, Any],
+        trace_id: str,
+    ) -> dict[str, Any]:
+        started = time.perf_counter()
+        model_id = None
+        input_tokens = 0
+        output_tokens = 0
+        candidate_hash = None
+        safety = "fallback"
+        summary = None
+        step6_status = "error"
+        step6_error = None
+        try:
+            packet = build_packet(
+                case_id=case_id,
+                input_revision=revision.revision,
+                facts_row={key: revision.payload.get(key) for key in STRUCTURED_FACTS},
+                policy=decisions["policy"],
+                route=decisions["route"],
+                citations=decisions["citations"],
+            )
+            assert_no_restricted(packet)
+            client = self._mantle_client()
+            model_id = getattr(client, "model_id", self._shadow_model_id)
+            settings = load_settings(self.state_dir)
+            prompt_client = None
+            if settings.api_key and settings.prompt_id:
+                prompt_client = ControlClient(
+                    api_key=settings.api_key,
+                    region=settings.region,
+                    base_url=settings.control_base_url,
+                )
+            system = resolve_system_prompt(settings, prompt_client)
+            verdict, narrative, input_tokens, output_tokens = _generate(
+                client, system, packet_text(packet)
+            )
+            candidate_hash = digest(narrative) if narrative else None
+            if verdict == "passed":
+                summary = narrative
+                safety = "passed"
+                step6_status = "ok"
+            else:
+                step6_error = verdict
+                safety = "fallback"
+                step6_status = "error"
+        except RestrictedValueError:
+            step6_error = "restricted_value"
+            safety = "fallback"
+        except ShadowError as exc:
+            step6_error = exc.error_code
+            safety = "fallback"
+        except Exception:
+            step6_error = "model_error"
+            safety = "fallback"
+
+        self._event(
+            trace_id,
+            "6",
+            "shadow_summary",
+            case_id,
+            revision.revision,
+            None,
+            status=step6_status,
+            error_code=step6_error,
+            started=started,
+            output_sha256=candidate_hash,
+            model_id=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+        )
+        self._event(
+            trace_id,
+            "7",
+            "safety_scan",
+            case_id,
+            revision.revision,
+            None,
+            status="ok" if safety == "passed" else "error",
+            error_code=None if safety == "passed" else safety,
+            shadow_safety_status=safety,
+        )
+        draft = dict(draft)
+        draft["evidence_summary"] = summary
+        draft["safety_status"] = safety
+        return draft
+
+    def _mantle_client(self):
+        if self._shadow_chat is not None:
+            return _StubMantle(self._shadow_chat, self._shadow_model_id)
+        settings = load_settings(self.state_dir)
+        if not settings.api_key:
+            raise ShadowError("api_key_missing", "AWS_BEARER_TOKEN_BEDROCK is required")
+        from fnol_shadow.bedrock import MantleClient
+
+        return MantleClient(
+            api_key=settings.api_key,
+            region=settings.region,
+            model_id=settings.model_id,
+            guardrail_id=settings.guardrail_id,
+            guardrail_version=settings.guardrail_version,
+            base_url=settings.mantle_base_url,
+        )
+
+    def _call_transport(
+        self,
+        method: str,
+        url: str,
+        body: dict | None,
+        headers: dict[str, str] | None,
+    ) -> tuple[int, dict[str, Any]]:
+        if self._transport is not None:
+            path = url
+            if url.startswith(self.mock_url):
+                path = url[len(self.mock_url) :] or "/"
+            return self._transport(method, path, body, headers)
+        return default_transport(method, url, body, headers)
+
+    def _trace_id(self, case_id: str) -> str | None:
+        revision = self.stores.input.get_revision(case_id)
+        return revision.trace_id if revision is not None else None
+
     def _event(
         self,
         trace_id,
@@ -174,6 +394,11 @@ class AnalystClient:
         duration_ms=None,
         output_sha256=None,
         started=None,
+        model_id=None,
+        input_tokens=None,
+        output_tokens=None,
+        shadow_safety_status=None,
+        mock_http_status=None,
     ):
         if duration_ms is None and started is not None:
             duration_ms = int((time.perf_counter() - started) * 1000)
@@ -190,4 +415,18 @@ class AnalystClient:
             error_code=error_code,
             duration_ms=duration_ms,
             output_sha256=output_sha256,
+            model_id=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
+            shadow_safety_status=shadow_safety_status,
+            mock_http_status=mock_http_status,
         )
+
+
+class _StubMantle:
+    def __init__(self, chat: ShadowChat, model_id: str):
+        self._chat = chat
+        self.model_id = model_id
+
+    def chat(self, system: str, user: str):
+        return self._chat(system, user)

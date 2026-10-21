@@ -91,11 +91,21 @@ def build_draft(
     policy: dict[str, Any],
     route: dict[str, Any],
     citations: dict[str, Any],
+    evidence_summary: str | None = None,
+    safety_status: str = "skipped",
 ) -> dict[str, Any]:
-    """Build the contract object. Refuses restricted values before returning."""
+    """Build the contract object. Refuses restricted values before returning.
+
+    ``narrative`` is always the deterministic skeleton. ``evidence_summary`` is the
+    optional model slot; ``safety_status`` is skipped, passed, or fallback.
+    """
     facts_row = {key: facts_row.get(key) for key in FACT_COLUMNS}
     missing = [item for item in route.get("missing_information", []) if isinstance(item, str)]
     version = route.get("selected_policy_version")
+    if safety_status not in ("skipped", "passed", "fallback"):
+        raise ValueError("safety_status must be skipped, passed, or fallback")
+    if evidence_summary is not None and not isinstance(evidence_summary, str):
+        raise TypeError("evidence_summary must be a string or null")
     draft = {
         "case_id": case_id,
         "classification": route.get("classification"),
@@ -115,6 +125,8 @@ def build_draft(
             {"field": field, "question": FOLLOW_UP[field]} for field in missing if field in FOLLOW_UP
         ],
         "narrative": _narrative(case_id, input_revision, facts_row, policy, route, citations),
+        "evidence_summary": evidence_summary,
+        "safety_status": safety_status,
     }
     assert_no_restricted(draft)
     return draft

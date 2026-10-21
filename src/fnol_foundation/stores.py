@@ -46,6 +46,8 @@ TRACE_COLUMNS = (
     "shadow_narrative",
     "shadow_safety_status",
     "event",
+    "prev_hash",
+    "event_hash",
 )
 
 _TRACE_NOT_NULL = {"trace_id", "span_id", "step", "actor", "status"}
@@ -625,16 +627,24 @@ class OutputStore:
             outcome=row["outcome"],
         )
 
-    def update_status(self, draft_id, status, review_id=None, outcome=None):
+    def update_status(self, draft_id, status, review_id=None, outcome=None, *, clear_review_id=False):
         """Record review progress. The draft body and hash stay as inserted."""
         assert_no_restricted({"status": status, "review_id": review_id, "outcome": outcome})
         with connect(self.path) as db:
-            cur = db.execute(
-                """UPDATE drafts
-                   SET status = ?, review_id = COALESCE(?, review_id), outcome = COALESCE(?, outcome)
-                   WHERE draft_id = ?""",
-                (status, review_id, outcome, draft_id),
-            )
+            if clear_review_id:
+                cur = db.execute(
+                    """UPDATE drafts
+                       SET status = ?, review_id = NULL, outcome = COALESCE(?, outcome)
+                       WHERE draft_id = ?""",
+                    (status, outcome, draft_id),
+                )
+            else:
+                cur = db.execute(
+                    """UPDATE drafts
+                       SET status = ?, review_id = COALESCE(?, review_id), outcome = COALESCE(?, outcome)
+                       WHERE draft_id = ?""",
+                    (status, review_id, outcome, draft_id),
+                )
             if cur.rowcount != 1:
                 raise KeyError(draft_id)
         return self.get_draft(draft_id)
@@ -646,9 +656,11 @@ class TraceStore:
         with connect(self.path) as db:
             db.executescript(TRACE_SCHEMA)
             _add_column(db, "trace_events", "event", "TEXT")
+            _add_column(db, "trace_events", "prev_hash", "TEXT")
+            _add_column(db, "trace_events", "event_hash", "TEXT")
 
     def append_event(self, **fields):
-        """Insert one trace event. Updates and deletes are rejected by triggers."""
+        """Insert one hash-chained trace event. Updates and deletes are rejected by triggers."""
         event = {name: fields.get(name) for name in TRACE_COLUMNS}
         missing = [name for name in ("trace_id", "span_id", "step", "actor", "status") if not event[name]]
         if missing:
@@ -659,6 +671,18 @@ class TraceStore:
         columns = ", ".join(TRACE_COLUMNS)
         placeholders = ", ".join("?" for _ in TRACE_COLUMNS)
         with connect(self.path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            previous = db.execute(
+                "SELECT event_hash FROM trace_events ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+            prev_hash = previous["event_hash"] if previous is not None else None
+            body = {
+                name: event[name]
+                for name in TRACE_COLUMNS
+                if name not in ("event_hash", "prev_hash")
+            }
+            event["prev_hash"] = prev_hash
+            event["event_hash"] = digest({"prev_hash": prev_hash, "event": body})
             db.execute(
                 f"INSERT INTO trace_events ({columns}) VALUES ({placeholders})",
                 tuple(event[name] for name in TRACE_COLUMNS),

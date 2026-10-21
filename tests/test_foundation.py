@@ -102,11 +102,33 @@ class StoreTests(unittest.TestCase):
         )
         self.assertEqual(event["step"], "1")
         self.assertEqual(event["duration_ms"], 12)
+        self.assertIsNone(event["prev_hash"])
+        self.assertTrue(isinstance(event["event_hash"], str) and len(event["event_hash"]) == 64)
         with sqlite3.connect(self.stores.trace.path) as db:
             with self.assertRaises(sqlite3.IntegrityError):
                 db.execute("UPDATE trace_events SET status = 'changed'")
             with self.assertRaises(sqlite3.IntegrityError):
                 db.execute("DELETE FROM trace_events")
+
+    def test_trace_events_are_hash_chained(self):
+        first = self.stores.trace.append_event(
+            trace_id="trace-1",
+            span_id="span-1",
+            step="1",
+            actor="intake",
+            status="ok",
+            event="started",
+        )
+        second = self.stores.trace.append_event(
+            trace_id="trace-1",
+            span_id="span-2",
+            step="2",
+            actor="policy",
+            status="ok",
+            event="tool_read",
+        )
+        self.assertEqual(second["prev_hash"], first["event_hash"])
+        self.assertNotEqual(second["event_hash"], first["event_hash"])
 
     def test_draft_hash_matches_the_mock_and_body_stays_fixed(self):
         draft = {"case_id": "AUTO-D01", "summary": "Draft FNOL for human handler."}

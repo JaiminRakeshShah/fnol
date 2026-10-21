@@ -82,6 +82,8 @@ class DraftTests(unittest.TestCase):
         self.assertGreaterEqual(len(draft["narrative"]), 20)
         self.assertIn("draft", draft["narrative"].lower())
         self.assertFalse(draft["follow_up_questions"])
+        self.assertIsNone(draft["evidence_summary"])
+        self.assertEqual(draft["safety_status"], "skipped")
 
     def test_missing_fields_get_targeted_questions(self):
         draft = build_draft(
