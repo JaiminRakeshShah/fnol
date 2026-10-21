@@ -1,4 +1,8 @@
-"""GET /v1/cases/{case_id}/claims with at most three attempts."""
+"""GET /v1/cases/{case_id}/claims.
+
+Retries a transport error or HTTP 5xx at most three times. A 404 stops.
+A 200 whose body is not a claims object is unavailable and is not stored.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -53,7 +57,7 @@ def fetch_claims(
     max_attempts: int = MAX_ATTEMPTS,
     get: Callable[..., tuple[int, dict[str, Any] | None]] | None = None,
 ) -> ClaimsFetchResult:
-    """Fetch claims. Retry only HTTP 503. A malformed 200 is treated as unavailable."""
+    """Fetch claims. Retry transport errors and HTTP 5xx. A malformed 200 is unavailable."""
     url = tool_url(base_url, case_id, "claims")
     http_attempts, body = fetch_with_retries(url, max_attempts=max_attempts, get=get)
     attempts = tuple(

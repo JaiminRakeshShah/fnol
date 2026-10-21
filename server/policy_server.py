@@ -19,9 +19,10 @@ SERVER_INFO = {"name": "fnol-policy", "version": "1.0.0"}
 START_POLICY = {
     "name": "start_policy",
     "description": (
-        "GET policy for each intake revision, drop private_token, store the "
-        "canonical JSON, and select the single interval containing the incident. "
-        "Zero or several matches store a null version and a reason."
+        "GET policy for each intake revision, drop private_token, and store the "
+        "canonical JSON on that revision. Select the single interval containing "
+        "the incident. Zero or several matches store a null version. A wording "
+        "file intake did not load is omitted from policy_ids."
     ),
     "inputSchema": {
         "type": "object",

@@ -74,15 +74,12 @@ class PipelineGoldTests(unittest.TestCase):
                 )
                 self.assertEqual(route["missing_information"], gold["missing_information"], case_id)
                 self.assertEqual(route["duplicate_delivery"], case_id == "AUTO-D10", case_id)
-                expected_ids = [item for item in gold["policy_ids"] if item != "AUTO-TRIAGE-01"]
-                got_ids = []
-                if policy["wording_source"]:
-                    got_ids.append(policy["wording_source"])
-                got_ids.extend(policy["endorsements"])
-                self.assertEqual(got_ids, expected_ids, case_id)
+                self.assertEqual(policy["policy_ids"], gold["policy_ids"], case_id)
+                self.assertEqual(policy["missing_sources"], [], case_id)
                 payload = stores.input.get_tool_payload(case_id, "policy", route["input_revision"])
                 self.assertIsNotNone(payload, case_id)
                 self.assertNotIn("private_token", payload["raw_json"])
+                self.assertIn("policies", payload["raw_json"])
             self.assertEqual(by_policy["AUTO-D05"]["reason"], "ambiguous")
             self.assertTrue(by_policy["AUTO-D05"]["policy_available"])
             self.assertEqual(by_policy["AUTO-D06"]["reason"], "zero")

@@ -134,6 +134,17 @@ def test_unknown_injury_and_drivable_stay_unknown():
     assert r.vehicle_drivable is None
 
 
+def test_wording_missing_keeps_the_selected_version():
+    r = route(
+        _fields(),
+        PolicyResult(selected_policy_version="2", policy_available=False, reason="wording_missing"),
+        _claims(),
+    )
+    assert r.route == "manual_review"
+    assert r.selected_policy_version == "2"
+    assert r.reasons == ["wording_missing"]
+
+
 def test_repeated_label_is_manual_review():
     r = route(_fields(repeated_fields=("driver_name",)), _policy(), _claims())
     assert r.route == "manual_review"

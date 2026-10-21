@@ -52,6 +52,20 @@ def test_always_timeout_after_three_attempts():
     assert all(a.status == 503 for a in result.attempts)
 
 
+def test_server_error_is_retried():
+    calls = {"n": 0}
+
+    def get(_url):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 500, {"error": "http_500"}
+        return 200, {"existing_claims": [], "intake_deliveries": 1, "source_id": "X"}
+
+    result = fetch_claims("AUTO-D01", "http://example", get=get)
+    assert calls["n"] == 2
+    assert result.snapshot.available is True
+
+
 def test_not_found_is_not_retried():
     calls = {"n": 0}
 

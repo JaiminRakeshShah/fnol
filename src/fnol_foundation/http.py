@@ -1,4 +1,8 @@
-"""JSON GET with a three-attempt cap. Only HTTP 503 is retried."""
+"""JSON GET for case-scoped tools.
+
+A transport failure or an HTTP 5xx is retried, up to three attempts total.
+404 and every other 4xx stop on the first response.
+"""
 
 from __future__ import annotations
 
@@ -70,13 +74,17 @@ def _object(raw: bytes) -> dict[str, Any] | None:
     return body if isinstance(body, dict) else None
 
 
+def _retryable(status: int) -> bool:
+    return status == 0 or status >= 500
+
+
 def fetch_with_retries(
     url: str,
     *,
     max_attempts: int = MAX_ATTEMPTS,
     get: Get | None = None,
 ) -> tuple[tuple[HttpAttempt, ...], dict[str, Any] | None]:
-    """GET url. Retry only on 503, at most max_attempts times. Other statuses stop."""
+    """GET url. Retry transport errors and HTTP 5xx. Stop immediately on 4xx."""
     if max_attempts < 1:
         raise ValueError("max_attempts must be at least 1")
     getter = get or default_get
@@ -90,6 +98,6 @@ def fetch_with_retries(
         attempts.append(HttpAttempt(number, status, body, duration_ms))
         if status == 200 and isinstance(body, dict):
             return tuple(attempts), body
-        if status != 503 or number == max_attempts:
+        if not _retryable(status) or number == max_attempts:
             break
     return tuple(attempts), None

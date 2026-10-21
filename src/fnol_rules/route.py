@@ -72,7 +72,9 @@ def route(
         reasons.append("conflicting_facts")
     if not claims.available:
         reasons.append("claims_unavailable")
-    if not policy.policy_available:
+    if policy.reason == "wording_missing":
+        reasons.append("wording_missing")
+    elif not policy.policy_available:
         reasons.append("policy_unavailable")
     elif policy.selected_policy_version is None:
         reasons.append("policy_version_null")

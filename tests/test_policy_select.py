@@ -58,3 +58,31 @@ def test_instant_before_version_two_selects_version_one():
     assert body["reason"] == "matched"
     assert body["selected_policy_version"] == "1"
     assert body["wording_source"] == "AUTO-WORDING-V1"
+    assert body["policy_ids"] == ["AUTO-TRIAGE-01", "AUTO-WORDING-V1"]
+
+
+def test_version_two_starts_at_its_effective_from():
+    body = select_policy("2026-09-01T00:00:00Z", {"policies": [V1, V2]})
+    assert body["selected_policy_version"] == "2"
+    assert body["reason"] == "matched"
+
+
+def test_empty_policy_list_is_zero_matches():
+    body = select_policy("2026-10-01T12:00:00Z", {"source_id": "X", "policies": []})
+    assert body["reason"] == "zero"
+    assert body["policy_available"] is True
+    assert body["policy_ids"] == ["AUTO-TRIAGE-01"]
+
+
+def test_missing_wording_keeps_the_version_out_of_policy_ids():
+    body = select_policy(
+        "2026-10-01T12:00:00Z",
+        {"source_id": "AUTO-D09-POLICY", "policy_number": "PA-D09", "vehicle_id": "VEH-D09", "policies": [V1, V2]},
+        known_sources={"AUTO-TRIAGE-01"},
+    )
+    assert body["reason"] == "wording_missing"
+    assert body["policy_available"] is False
+    assert body["selected_policy_version"] == "2"
+    assert body["policy_ids"] == ["AUTO-TRIAGE-01"]
+    assert body["missing_sources"] == ["AUTO-WORDING-V2", "AUTO-END-GLASS-01"]
+    assert body["policy_number"] == "PA-D09"

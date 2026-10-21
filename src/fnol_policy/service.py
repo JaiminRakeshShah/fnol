@@ -1,4 +1,9 @@
-"""Policy step: fetch, redact, select one interval, persist the decision."""
+"""Policy step: fetch, redact, select one interval, persist the decision.
+
+The stored snapshot keeps the policies array so a later citation can quote it.
+private_token is removed before that write. The decision row is the only
+version rules is allowed to read.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +13,7 @@ from fnol_foundation.canonical import RestrictedValueError, digest
 from fnol_foundation.events import record_event
 from fnol_foundation.http import MAX_ATTEMPTS, fetch_with_retries, public_error, tool_url
 from fnol_foundation.stores import Stores
-from fnol_policy.select import select_policy
+from fnol_policy.select import PROCEDURE_ID, select_policy
 
 RULE_VERSION = "AUTO-TRIAGE-01"
 
@@ -21,6 +26,10 @@ def _unavailable(reason: str) -> dict[str, Any]:
         "wording_source": None,
         "endorsements": [],
         "source_id": None,
+        "policy_number": None,
+        "vehicle_id": None,
+        "policy_ids": [PROCEDURE_ID],
+        "missing_sources": [],
     }
 
 
@@ -63,7 +72,8 @@ def run_policy(
 
     payload_sha = None
     if body is None:
-        decision = _unavailable("unavailable")
+        last_status = attempts[-1].status if attempts else 0
+        decision = _unavailable("not_found" if last_status == 404 else "unavailable")
     else:
         try:
             payload_sha = stores.input.put_tool_payload(case_id, "policy", body, input_revision)
@@ -84,7 +94,8 @@ def run_policy(
             )
         else:
             stored = stores.input.get_tool_payload(case_id, "policy", input_revision)
-            decision = select_policy(incident_timestamp, stored["raw_json"])
+            known = {row["source_id"] for row in stores.input.list_procedures()}
+            decision = select_policy(incident_timestamp, stored["raw_json"], known)
             parent = record_event(
                 stores,
                 trace_id=trace_id,
