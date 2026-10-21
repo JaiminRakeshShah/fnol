@@ -591,8 +591,19 @@ class OutputStore:
     def get_draft(self, draft_id):
         with connect(self.path) as db:
             row = db.execute("SELECT * FROM drafts WHERE draft_id = ?", (draft_id,)).fetchone()
-        if row is None:
-            return None
+        return None if row is None else self._record(row)
+
+    def latest_draft(self, case_id):
+        """Most recently recorded draft for this case, or None."""
+        with connect(self.path) as db:
+            row = db.execute(
+                """SELECT * FROM drafts WHERE case_id = ?
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (case_id,),
+            ).fetchone()
+        return None if row is None else self._record(row)
+
+    def _record(self, row):
         return DraftRecord(
             draft_id=row["draft_id"],
             case_id=row["case_id"],

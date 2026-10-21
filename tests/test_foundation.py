@@ -108,6 +108,14 @@ class StoreTests(unittest.TestCase):
             with self.assertRaises(sqlite3.IntegrityError):
                 db.execute("UPDATE drafts SET draft_json = '{}' WHERE draft_id = 'draft_test'")
 
+    def test_latest_draft_is_the_most_recent_for_the_case(self):
+        self.stores.output.record_draft("AUTO-D01", {"n": 1}, draft_id="draft_old", created_at="2026-10-01T00:00:00Z")
+        self.stores.output.record_draft("AUTO-D01", {"n": 2}, draft_id="draft_new", created_at="2026-10-01T01:00:00Z")
+        self.stores.output.record_draft("AUTO-D02", {"n": 3}, draft_id="draft_other")
+        latest = self.stores.output.latest_draft("AUTO-D01")
+        self.assertEqual(latest.draft_id, "draft_new")
+        self.assertIsNone(self.stores.output.latest_draft("AUTO-D99"))
+
     def test_raw_evidence_may_contain_the_marker(self):
         row = self.stores.input.append_revision("AUTO-D01", {
             "loss_type": "collision",
