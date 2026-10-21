@@ -39,6 +39,18 @@ class StoreTests(unittest.TestCase):
         self.assertTrue((directory / "output.sqlite").is_file())
         self.assertTrue((directory / "trace.sqlite").is_file())
 
+    def test_sqlite_uses_wal(self):
+        with sqlite3.connect(self.stores.input.path) as db:
+            mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+        self.assertEqual(str(mode).lower(), "wal")
+
+    def test_latest_loss_keys_are_ordered_by_case_id(self):
+        self.stores.input.append_revision("B-CASE", {"loss_type": "collision"})
+        self.stores.input.append_revision("A-CASE", {"loss_type": "theft"})
+        self.stores.input.append_revision("C-CASE", {"loss_type": "glass"})
+        keys = [row["case_id"] for row in self.stores.input.latest_loss_keys()]
+        self.assertEqual(keys, ["A-CASE", "B-CASE", "C-CASE"])
+
     def test_reingest_increments_revision_and_keeps_the_prior_row(self):
         first = self.stores.input.append_revision("AUTO-D01", {"loss_type": "collision"}, "sha-a", "2026-10-01T00:00:00+00:00")
         second = self.stores.input.append_revision("AUTO-D01", {"loss_type": "collision"}, "sha-b", "2026-10-01T01:00:00+00:00")
@@ -107,6 +119,14 @@ class StoreTests(unittest.TestCase):
         with sqlite3.connect(self.stores.output.path) as db:
             with self.assertRaises(sqlite3.IntegrityError):
                 db.execute("UPDATE drafts SET draft_json = '{}' WHERE draft_id = 'draft_test'")
+
+    def test_latest_draft_is_the_most_recent_for_the_case(self):
+        self.stores.output.record_draft("AUTO-D01", {"n": 1}, draft_id="draft_old", created_at="2026-10-01T00:00:00Z")
+        self.stores.output.record_draft("AUTO-D01", {"n": 2}, draft_id="draft_new", created_at="2026-10-01T01:00:00Z")
+        self.stores.output.record_draft("AUTO-D02", {"n": 3}, draft_id="draft_other")
+        latest = self.stores.output.latest_draft("AUTO-D01")
+        self.assertEqual(latest.draft_id, "draft_new")
+        self.assertIsNone(self.stores.output.latest_draft("AUTO-D99"))
 
     def test_raw_evidence_may_contain_the_marker(self):
         row = self.stores.input.append_revision("AUTO-D01", {

@@ -25,7 +25,7 @@
       {
         "claim": "triage_and_potential_coverage",
         "source_id": "AUTO-WORDING-V2",
-        "quote": "Policy form: HPA-2026 version 2"
+        "quote": "Collision section: physical damage from accidental impact involving the described vehicle is\naddressed by the collision wording, subject to declarations and listed endorsements."
       },
       {
         "claim": "incident_evidence",
@@ -33,27 +33,17 @@
         "quote": "The car struck a roadside post while turning. I need to report the incident and understand the next steps."
       },
       {
-        "claim": "incident_evidence",
-        "source_id": "AUTO-D01-ESTIMATE",
-        "quote": "Estimate reference: EST-D01"
-      },
-      {
-        "claim": "incident_evidence",
-        "source_id": "AUTO-D01-REPORT",
-        "quote": "Vehicle reference: VEH-D01"
-      },
-      {
         "claim": "policy_or_claim_history",
         "source_id": "AUTO-D01-POLICY",
-        "quote": "\"policies\": [{\"effective_from\": \"2026-01-01T00:00:00Z\", \"effective_to\": \"2026-09-01T00:00:00Z\", \"endorsements\": [], \"version\": \"1\", \"wording_source\": \"AUTO-WORDING-V1\"}, {\"effective_from\": \"2026-09-01T00:00:00Z\", \"effective_to\": \"2027-01-01T00:00:00Z\", \"endorsements\": [], \"version\": \"2\", \"wording_source\": \"AUTO-WORDING-V2\"}]"
+        "quote": "{\"effective_from\": \"2026-09-01T00:00:00Z\", \"effective_to\": \"2027-01-01T00:00:00Z\", \"endorsements\": [], \"version\": \"2\", \"wording_source\": \"AUTO-WORDING-V2\"}"
       },
       {
         "claim": "policy_or_claim_history",
         "source_id": "AUTO-D01-CLAIMS",
-        "quote": "\"existing_claims\": []"
+        "quote": "\"loss_reference\": \"auto-loss-D01\""
       }
     ],
     "follow_up_questions": [],
-    "narrative": "Draft FNOL for human handler: collision incident at 2026-10-01T12:00:00Z. Recommended route: standard. Cited coverage wording is potentially relevant only. No coverage, liability, fraud, reserve, settlement, denial or payment decision is made. Draft only; human approval is required."
+    "narrative": "Draft FNOL for the human handler. Case AUTO-D01, input revision 1.\nClassification: collision. Recommended route: standard under AUTO-TRIAGE-01.\nFacts: policy PA-D01, vehicle VEH-D01, incident 2026-10-01T12:00:00Z, selected policy version 2.\nFlags: injury reported no; vehicle drivable yes; referral indicator none; duplicate intake delivery no.\nRoute basis: no manual-review, urgency, or specialist trigger applies.\nEvidence: 5 exact citations from the named sources.\nCited wording is potentially relevant only. No coverage, liability, fraud, reserve, settlement, denial or payment decision is made here. A referral indicator is not a fraud finding. A policy-period mismatch requires human review, not automatic denial. This is a draft; a human must approve this exact draft before any record is created."
   }
 ]

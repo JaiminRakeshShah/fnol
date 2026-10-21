@@ -272,10 +272,18 @@ class ImmutableRecordError(ValueError):
 
 @contextmanager
 def connect(path):
+    """Open one SQLite connection.
+
+    WAL lets readers proceed while another process writes. busy_timeout matches
+    the connect timeout so multi-process step servers wait instead of failing
+    immediately under contention.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=15)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=15000")
     try:
         yield db
         db.commit()
@@ -420,7 +428,7 @@ class InputStore:
         )
 
     def latest_loss_keys(self):
-        """Latest revision of each case: case_id and loss_reference."""
+        """Latest revision of each case: case_id and loss_reference, ordered by case_id."""
         with connect(self.path) as db:
             rows = db.execute(
                 """SELECT case_id, loss_reference
@@ -428,7 +436,8 @@ class InputStore:
                    WHERE revision = (
                        SELECT MAX(revision) FROM input_revisions
                        WHERE case_id = current.case_id
-                   )"""
+                   )
+                   ORDER BY case_id"""
             ).fetchall()
         return [{"case_id": row["case_id"], "loss_reference": row["loss_reference"]} for row in rows]
 
@@ -591,8 +600,19 @@ class OutputStore:
     def get_draft(self, draft_id):
         with connect(self.path) as db:
             row = db.execute("SELECT * FROM drafts WHERE draft_id = ?", (draft_id,)).fetchone()
-        if row is None:
-            return None
+        return None if row is None else self._record(row)
+
+    def latest_draft(self, case_id):
+        """Most recently recorded draft for this case, or None."""
+        with connect(self.path) as db:
+            row = db.execute(
+                """SELECT * FROM drafts WHERE case_id = ?
+                   ORDER BY created_at DESC, rowid DESC LIMIT 1""",
+                (case_id,),
+            ).fetchone()
+        return None if row is None else self._record(row)
+
+    def _record(self, row):
         return DraftRecord(
             draft_id=row["draft_id"],
             case_id=row["case_id"],
