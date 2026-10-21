@@ -1,0 +1,8 @@
+Duplicate FNOL record creation against the local mock.
+review create HTTP 201, review_id rev_6360c7647d8d
+first POST /v1/records Idempotency-Key fnol-nine -> HTTP 201 {'record_id': 'auto-loss-nine', 'case_id': 'AUTO-D09', 'status': 'created', 'review_id': 'rev_6360c7647d8d'}
+second identical POST -> HTTP 200 {'case_id': 'AUTO-D09', 'record_id': 'auto-loss-nine', 'review_id': 'rev_6360c7647d8d', 'status': 'created'}
+same record_id: True
+AUTO-D10 is the same logical loss. review HTTP 201.
+POST with a new key -> HTTP 409 {'error': 'duplicate_case', 'existing_record_id': 'auto-loss-nine'}
+rows in records table: 1 ids=['auto-loss-nine']

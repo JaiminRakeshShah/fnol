@@ -70,3 +70,20 @@ uv run --locked python tools/runtime.py audit > reports/audit.json
 
 Replace REVIEW_ID with the returned identifier. Create `reports/` before redirecting the audit. To reject, use `reject` with the same arguments. For a fresh run, stop clients and use `uv run --locked python tools/runtime.py reset --confirm`.
 This CLI simulates a human boundary, not production identity. During assessment the assessor controls approval and state. Do not expose the service to the public internet.
+
+## Week 10 hardening
+
+The `security` branch adds retries with exponential backoff and jitter, a circuit breaker, idempotent record creation, untrusted-document handling, a privilege guard, JSON traces, SLO metrics, and a runbook. No external credential is required. Copy `.env.example` if you want the variable names; leave the Bedrock token empty.
+
+From this directory, with Python 3.12:
+
+```sh
+python3 -m pytest -q
+python3 tools/scan_secrets.py
+python3 tools/scan_secrets.py --ancestors
+python3 tools/demo_week10.py
+```
+
+`demo_week10.py` starts the local mock, runs the timeout, duplicate, injection, privilege, and three end-to-end scenarios, and writes `docs/week10/evidence/`. The lab PDF is `docs/week10/Week10_Lab_Hardening.pdf`. Narrative sources are `docs/week10/SLO.md`, `FAILURE_MAPPING.md`, `LEAST_PRIVILEGE_AUDIT.md`, `METRICS_ALERTS.md`, and `RUNBOOK.md`. Bugs fixed on this branch are listed in `BUGS_FOUND.md`.
+
+Regenerate the PDF after a demo run with `python3 tools/render_week10.py` (needs Pillow and fpdf2, used only to render the already-captured output).

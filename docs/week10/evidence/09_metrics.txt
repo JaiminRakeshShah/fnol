@@ -1,0 +1,31 @@
+Metrics tied to the SLO, from the scenario run.
+route_within_slo_ratio: share of routes produced within 15 seconds.
+time_to_route_p95_ms: 95th percentile of route time.
+
+{
+  "route_within_slo_ratio": 1.0,
+  "time_to_route_p95_ms": 56.0,
+  "samples": 12,
+  "alert": {
+    "name": "fnol_slo_breach",
+    "page": false,
+    "severity": "ok",
+    "reasons": [],
+    "route_within_slo_ratio": 1.0,
+    "time_to_route_p95_ms": 56.0,
+    "samples": 12,
+    "threshold": {
+      "min_samples": 20,
+      "success_ratio_below": 0.95,
+      "p95_ms_above": 15000
+    }
+  }
+}
+
+Alert threshold that pages a human:
+name: fnol_slo_breach
+page when samples >= 20 AND (route_within_slo_ratio < 0.95 OR time_to_route_p95_ms > 15000).
+
+Check with 20 fast samples, then with two misses:
+healthy: {"name": "fnol_slo_breach", "page": false, "severity": "ok", "reasons": [], "route_within_slo_ratio": 1.0, "time_to_route_p95_ms": 120.0, "samples": 20, "threshold": {"min_samples": 20, "success_ratio_below": 0.95, "p95_ms_above": 15000}}
+breached: {"name": "fnol_slo_breach", "page": true, "severity": "page", "reasons": ["route_within_slo_ratio 0.9091 < 0.95 over 22 samples", "time_to_route_p95_ms 16000 > 15000"], "route_within_slo_ratio": 0.9090909090909091, "time_to_route_p95_ms": 16000.0, "samples": 22, "threshold": {"min_samples": 20, "success_ratio_below": 0.95, "p95_ms_above": 15000}}

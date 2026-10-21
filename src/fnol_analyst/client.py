@@ -158,6 +158,7 @@ class AnalystClient:
             trace_id, "5", "draft_built", case_id, revision.revision, None,
             status="ok", output_sha256=digest(draft), started=started,
         )
+        self._quarantine_untrusted(revision, draft, trace_id)
         if ai_enabled():
             draft = self._fill_evidence_summary(
                 draft,
@@ -252,6 +253,49 @@ class AnalystClient:
             )
         except SubmitError as exc:
             raise AnalystError(exc.error_code, str(exc)) from None
+
+    def _quarantine_untrusted(self, revision, draft, trace_id: str) -> None:
+        """Log embedded instructions as data. Do not change the draft or the route."""
+        from fnol_hardening.injection import handling_report
+        from fnol_hardening.telemetry import log_span, new_span_id
+
+        fields = (
+            ("raw_estimate", revision.payload.get("estimate_source_id")),
+            ("estimate_notes", revision.payload.get("estimate_source_id")),
+            ("raw_report", revision.payload.get("report_source_id")),
+            ("report_notes", revision.payload.get("report_source_id")),
+            ("raw_intake", revision.payload.get("intake_source")),
+            ("intake_notes", revision.payload.get("intake_source")),
+        )
+        for field, source_id in fields:
+            text = revision.payload.get(field)
+            if not isinstance(text, str) or not text:
+                continue
+            report = handling_report(
+                text,
+                source_id=source_id if isinstance(source_id, str) else field,
+                route=draft.get("routing"),
+            )
+            if not report["injection_detected"]:
+                continue
+            log_span({
+                "trace_id": trace_id,
+                "span_id": new_span_id(),
+                "event": "injection_quarantined",
+                "actor": ACTOR,
+                "status": "ok",
+                "case_id": draft.get("case_id"),
+                "input_revision": revision.revision,
+                "source_id": report["source_id"],
+                "field": field,
+                "treated_as": "untrusted_data",
+                "instructions_followed": False,
+                "actions": report["actions"],
+                "route_changed": False,
+                "route": report["route"],
+                "quarantined": report["quarantined"],
+                "response": report["response"],
+            })
 
     def _fill_evidence_summary(
         self,
@@ -369,6 +413,9 @@ class AnalystClient:
         body: dict | None,
         headers: dict[str, str] | None,
     ) -> tuple[int, dict[str, Any]]:
+        from fnol_hardening.privilege import authorize_http
+
+        authorize_http("analyst", method, url)
         if self._transport is not None:
             path = url
             if url.startswith(self.mock_url):

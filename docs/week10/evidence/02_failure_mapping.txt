@@ -1,0 +1,26 @@
+Failure case to pattern
+
+1. Claims or policy API timeout
+   Where: AUTO-D11 fails claims once then succeeds. AUTO-D07 fails claims on every attempt. The mock returns 503 upstream_timeout.
+   Pattern: Retry with exponential backoff and full jitter, at most three attempts, behind a circuit breaker (closed, open, half-open).
+   Fallback: Claims or policy stay unavailable. Routing is manual_review. The call returns; it does not hang.
+
+2. Duplicate FNOL submission or duplicate record create
+   Where: A second request with the same Idempotency-Key. AUTO-D09 and AUTO-D10 share logical loss auto-loss-nine.
+   Pattern: Idempotency key plus body fingerprint. The original result is replayed.
+   Fallback: No second claim record. A different body for the same key is a conflict. A second intake id for the same loss returns duplicate_case.
+
+3. Prompt injection in a repair estimate, note, or upload
+   Where: AUTO-D08-ESTIMATE contains a SYSTEM line that demands payment, skips human approval, and asks for private tokens.
+   Pattern: Input and context separation. Document text is untrusted data, not an instruction.
+   Fallback: The line is quarantined. Actions taken: none. The route stays the rule route. A model reply that obeys the line is blocked.
+
+4. Ambiguous policy interval
+   Where: AUTO-D05 has two policy intervals that both contain the incident timestamp.
+   Pattern: Human escalation. This is not retried and not denied.
+   Fallback: selected_policy_version is null. Route is manual_review. Only AUTO-TRIAGE-01 is cited as policy.
+
+5. Stale or boundary policy period
+   Where: AUTO-D06 incident timestamp is exactly effective_to. Intervals exclude the end.
+   Pattern: Human escalation. A period mismatch is not an automatic denial.
+   Fallback: selected_policy_version is null. Route is manual_review.

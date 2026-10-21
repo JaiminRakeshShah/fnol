@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from dataclasses import asdict
 from pathlib import Path
@@ -46,6 +47,7 @@ def start_routing(
                 "policy_decision_missing",
                 f"no policy decision for {cid} revision {revision.revision}",
             )
+        started = time.perf_counter()
         result = run_rules(
             cid,
             fields_from_payload(revision.payload),
@@ -56,6 +58,12 @@ def start_routing(
             trace_id=revision.trace_id or uuid.uuid4().hex,
             input_sha256=revision.document_set_sha256,
             fetch=fetch,
+        )
+        from fnol_hardening.metrics import metrics
+
+        metrics.observe_route(
+            int((time.perf_counter() - started) * 1000),
+            routed=result.route in {"standard", "urgent", "specialist", "manual_review"},
         )
         routed.append({
             "case_id": cid,

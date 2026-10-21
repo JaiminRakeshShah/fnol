@@ -1,0 +1,17 @@
+Least privilege. Forbidden actions raise PrivilegeError.
+
+RAISE  analyst          pay_claim  (privilege_denied)
+RAISE  analyst          deny_claim  (privilege_denied)
+RAISE  analyst          approve_claim  (privilege_denied)
+RAISE  analyst          approve_review  (privilege_denied)
+RAISE  analyst          settle_claim  (privilege_denied)
+RAISE  rules            pay_claim  (privilege_denied)
+RAISE  human_operator   pay_claim  (privilege_denied)
+ALLOW  human_operator   approve_review
+ALLOW  analyst          file_record
+ALLOW  analyst          submit_review
+RAISE  shadow           pay_claim  (privilege_denied)
+ALLOW  shadow           write_summary_slot
+ALLOW  citations        read_stored_evidence
+RAISE  citations        file_record  (privilege_denied)
+SHADOW HTTP POST /v1/payments RAISE pay_claim before socket

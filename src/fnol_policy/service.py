@@ -47,7 +47,7 @@ def run_policy(
     """GET policy for one revision. A failed fetch still stores an unavailable decision."""
     if fetch is None:
         url = tool_url(base_url, case_id, "policy")
-        attempts, body = fetch_with_retries(url, max_attempts=MAX_ATTEMPTS)
+        attempts, body = fetch_with_retries(url, max_attempts=MAX_ATTEMPTS, trace_id=trace_id)
     else:
         attempts, body = fetch(case_id, base_url)
 

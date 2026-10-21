@@ -10,6 +10,7 @@ import uuid
 from typing import Any
 
 from fnol_foundation.stores import Stores
+from fnol_hardening.telemetry import log_span
 
 
 def record_event(stores: Stores, **fields: Any) -> str:
@@ -17,4 +18,5 @@ def record_event(stores: Stores, **fields: Any) -> str:
         raise ValueError("event name is required")
     fields["span_id"] = fields.get("span_id") or uuid.uuid4().hex
     stores.trace.append_event(**fields)
+    log_span(fields)
     return fields["span_id"]

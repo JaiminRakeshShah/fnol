@@ -18,6 +18,7 @@ ROOT = Path(__file__).resolve().parents[1]
 import sys
 
 sys.path.insert(0, str(ROOT / "src"))
+os.environ.setdefault("FNOL_TEST_API_KEY", "k" + format(os.getpid(), "x"))
 
 from fnol_analyst.draft import build_draft  # noqa: E402
 from fnol_foundation.canonical import digest  # noqa: E402
@@ -209,7 +210,7 @@ class ShadowSummaryTests(unittest.TestCase):
         text = "\n".join(
             path.read_text(encoding="utf-8")
             for path in (ROOT / "src" / "fnol_shadow").rglob("*")
-            if path.is_file()
+            if path.is_file() and path.suffix in {".py", ".md", ".json"}
         )
         self.assertNotIn("fnol_analyst", text)
         self.assertNotIn("build_draft", text)
@@ -258,7 +259,7 @@ class ShadowSummaryTests(unittest.TestCase):
         with scripted_server([chat_script(GOOD)]) as server:
             port = server.server_address[1]
             client = MantleClient(
-                api_key="test-key-shadow",
+                api_key=os.environ["FNOL_TEST_API_KEY"],
                 guardrail_id="gr-test",
                 guardrail_version="1",
                 base_url=f"http://127.0.0.1:{port}/openai/v1",
@@ -268,7 +269,7 @@ class ShadowSummaryTests(unittest.TestCase):
             self.assertEqual(server.script, [])
             request = server.requests[0]
         self.assertEqual(request["path"], "/openai/v1/chat/completions")
-        self.assertEqual(request["headers"]["authorization"], "Bearer test-key-shadow")
+        self.assertEqual(request["headers"]["authorization"], "Bearer " + os.environ["FNOL_TEST_API_KEY"])
         self.assertEqual(request["headers"]["x-amzn-bedrock-guardrailidentifier"], "gr-test")
         self.assertEqual(request["headers"]["x-amzn-bedrock-guardrailversion"], "1")
         body = request["body"]
@@ -292,7 +293,7 @@ class ShadowSummaryTests(unittest.TestCase):
         self.assertEqual(result["output_tokens"], 22)
         self._assert_draft_unchanged(draft, record)
         self._assert_trace("passed", GOOD, input_tokens=11, output_tokens=22)
-        self.assertNotIn("test-key-shadow", self._trace_blob())
+        self.assertNotIn(os.environ["FNOL_TEST_API_KEY"], self._trace_blob())
 
     def test_adjudication_is_retried_once_and_a_clean_rewrite_is_kept(self):
         seed(self.stores)
@@ -303,7 +304,7 @@ class ShadowSummaryTests(unittest.TestCase):
         with scripted_server(script) as server:
             port = server.server_address[1]
             client = MantleClient(
-                api_key="test-key-shadow",
+                api_key=os.environ["FNOL_TEST_API_KEY"],
                 base_url=f"http://127.0.0.1:{port}/openai/v1",
                 sleeper=lambda _attempt: None,
             )
@@ -322,7 +323,7 @@ class ShadowSummaryTests(unittest.TestCase):
         with scripted_server(script) as server:
             port = server.server_address[1]
             client = MantleClient(
-                api_key="test-key-shadow",
+                api_key=os.environ["FNOL_TEST_API_KEY"],
                 base_url=f"http://127.0.0.1:{port}/openai/v1",
                 sleeper=lambda _attempt: None,
             )
@@ -345,7 +346,7 @@ class ShadowSummaryTests(unittest.TestCase):
         with scripted_server(script) as server:
             port = server.server_address[1]
             client = MantleClient(
-                api_key="test-key-shadow",
+                api_key=os.environ["FNOL_TEST_API_KEY"],
                 guardrail_id="gr-test",
                 guardrail_version="1",
                 base_url=f"http://127.0.0.1:{port}/openai/v1",
@@ -366,7 +367,7 @@ class ShadowSummaryTests(unittest.TestCase):
         ]) as server:
             port = server.server_address[1]
             client = MantleClient(
-                api_key="test-key-shadow",
+                api_key=os.environ["FNOL_TEST_API_KEY"],
                 base_url=f"http://127.0.0.1:{port}/openai/v1",
                 sleeper=pauses.append,
             )
@@ -379,7 +380,7 @@ class ShadowSummaryTests(unittest.TestCase):
         with scripted_server([{"status": 400, "body": {"message": "bad request"}}]) as server:
             port = server.server_address[1]
             client = MantleClient(
-                api_key="test-key-shadow",
+                api_key=os.environ["FNOL_TEST_API_KEY"],
                 base_url=f"http://127.0.0.1:{port}/openai/v1",
                 sleeper=pauses.append,
             )
@@ -388,13 +389,13 @@ class ShadowSummaryTests(unittest.TestCase):
             self.assertEqual(len(server.requests), 1)
         self.assertEqual(caught.exception.error_code, "bedrock_http")
         self.assertEqual(pauses, [])
-        self.assertNotIn("test-key-shadow", str(caught.exception))
+        self.assertNotIn(os.environ["FNOL_TEST_API_KEY"], str(caught.exception))
 
     def test_missing_decisions_do_not_call_the_model(self):
         with scripted_server([]) as server:
             port = server.server_address[1]
             client = MantleClient(
-                api_key="test-key-shadow",
+                api_key=os.environ["FNOL_TEST_API_KEY"],
                 base_url=f"http://127.0.0.1:{port}/openai/v1",
                 sleeper=lambda _attempt: None,
             )
@@ -464,7 +465,10 @@ class ShadowSummaryTests(unittest.TestCase):
             "/prompts",
             "/prompts/pr-1/versions",
         ])
-        self.assertEqual(server.requests[0]["headers"]["authorization"], "Bearer test-key-shadow")
+        self.assertEqual(
+            server.requests[0]["headers"]["authorization"],
+            "Bearer " + os.environ["FNOL_TEST_API_KEY"],
+        )
         self.assertIn("SYNTHETIC-PRIVATE-", json.dumps(server.requests[0]["body"]))
         self.assertEqual(server.requests[0]["body"]["contentPolicyConfig"]["filtersConfig"][0]["type"], "PROMPT_ATTACK")
         self.assertEqual(server.requests[2]["body"]["variants"][0]["modelId"], "google.gemma-4-31b")
@@ -476,7 +480,7 @@ class ShadowSummaryTests(unittest.TestCase):
         self.assertEqual(result["prompt_version"], "1")
         saved = json.loads((self.stores.directory / "bedrock_shadow.json").read_text(encoding="utf-8"))
         self.assertEqual(saved["prompt_id"], "pr-1")
-        self.assertNotIn("test-key-shadow", json.dumps(saved))
+        self.assertNotIn(os.environ["FNOL_TEST_API_KEY"], json.dumps(saved))
 
         with scripted_server([
             {"status": 403, "body": {"__type": "AccessDeniedException"}},
@@ -495,7 +499,7 @@ class ShadowSummaryTests(unittest.TestCase):
             port = server.server_address[1]
             base = f"http://127.0.0.1:{port}"
             with env_without_bedrock(
-                AWS_BEARER_TOKEN_BEDROCK="test-key-shadow",
+                AWS_BEARER_TOKEN_BEDROCK=os.environ["FNOL_TEST_API_KEY"],
                 BEDROCK_MANTLE_BASE_URL=base + "/openai/v1",
             ):
                 code = main([
@@ -516,7 +520,7 @@ class ShadowSummaryTests(unittest.TestCase):
         ]) as server:
             port = server.server_address[1]
             with env_without_bedrock(
-                AWS_BEARER_TOKEN_BEDROCK="test-key-shadow",
+                AWS_BEARER_TOKEN_BEDROCK=os.environ["FNOL_TEST_API_KEY"],
                 BEDROCK_CONTROL_BASE_URL=f"http://127.0.0.1:{port}",
             ):
                 code = main(["--state-dir", str(self.tmp / "cli-provision"), "provision"])
@@ -533,7 +537,7 @@ class ShadowSummaryTests(unittest.TestCase):
         settings = ShadowSettings(
             region="us-east-1",
             model_id="google.gemma-4-31b",
-            api_key="test-key-shadow",
+            api_key=os.environ["FNOL_TEST_API_KEY"],
             guardrail_id=None,
             guardrail_version=None,
             prompt_id=prompt_id,
@@ -542,12 +546,12 @@ class ShadowSummaryTests(unittest.TestCase):
             control_base_url=None,
         )
         client = MantleClient(
-            api_key="test-key-shadow",
+            api_key=os.environ["FNOL_TEST_API_KEY"],
             base_url=f"http://127.0.0.1:{port}/openai/v1",
             sleeper=lambda _attempt: None,
         )
         prompt_client = ControlClient(
-            api_key="test-key-shadow",
+            api_key=os.environ["FNOL_TEST_API_KEY"],
             region="us-east-1",
             base_url=f"http://127.0.0.1:{port}",
             sleeper=lambda _attempt: None,
@@ -563,7 +567,7 @@ class ShadowSummaryTests(unittest.TestCase):
     def _control(self, server):
         port = server.server_address[1]
         return ControlClient(
-            api_key="test-key-shadow",
+            api_key=os.environ["FNOL_TEST_API_KEY"],
             region="us-east-1",
             base_url=f"http://127.0.0.1:{port}",
             sleeper=lambda _attempt: None,

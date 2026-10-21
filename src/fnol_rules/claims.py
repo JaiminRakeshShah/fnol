@@ -56,10 +56,24 @@ def fetch_claims(
     *,
     max_attempts: int = MAX_ATTEMPTS,
     get: Callable[..., tuple[int, dict[str, Any] | None]] | None = None,
+    sleeper: Callable[[float], None] | None = None,
+    breaker=None,
+    rng=None,
+    base_delay: float = 0.05,
+    trace_id: str | None = None,
 ) -> ClaimsFetchResult:
-    """Fetch claims. Retry transport errors and HTTP 5xx. A malformed 200 is unavailable."""
+    """Fetch claims. Retry transport errors and HTTP 5xx with backoff. A malformed 200 is unavailable."""
     url = tool_url(base_url, case_id, "claims")
-    http_attempts, body = fetch_with_retries(url, max_attempts=max_attempts, get=get)
+    http_attempts, body = fetch_with_retries(
+        url,
+        max_attempts=max_attempts,
+        get=get,
+        sleeper=sleeper,
+        breaker=breaker,
+        rng=rng,
+        base_delay=base_delay,
+        trace_id=trace_id,
+    )
     attempts = tuple(
         ClaimsAttempt(item.attempt, item.status, item.body, item.duration_ms)
         for item in http_attempts

@@ -9,6 +9,8 @@ from datetime import datetime, timezone
 
 from fnol_foundation.canonical import EVIDENCE_TEXT_COLUMNS, RESTRICTED_MARKERS, RestrictedValueError, digest
 from fnol_foundation.events import record_event
+from fnol_hardening.backoff import backoff_seconds
+from fnol_hardening.privilege import authorize
 
 from fnol_intake.parse import (
     document_kind,
@@ -63,6 +65,20 @@ def _timed(fetch, url):
     return status, body, int((time.perf_counter() - started) * 1000)
 
 
+def _read_dependency(fetch, url, attempts=3):
+    """GET a case-list dependency. Retry transport errors and HTTP 5xx, then stop."""
+    status, body, duration_ms = 0, None, 0
+    for number in range(1, attempts + 1):
+        status, body, duration_ms = _timed(fetch, url)
+        if status == 200:
+            return status, body, duration_ms
+        if status != 0 and status < 500:
+            return status, body, duration_ms
+        if number < attempts:
+            time.sleep(backoff_seconds(number))
+    return status, body, duration_ms
+
+
 def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
     """Load procedure sources once, then write one revision per case id.
 
@@ -74,7 +90,8 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
     """
     fetch = transport or default_transport
     trace_id = uuid.uuid4().hex
-    health_status, health, health_ms = _timed(fetch, _url(mock_url, "/health"))
+    authorize("intake", "read_health")
+    health_status, health, health_ms = _read_dependency(fetch, _url(mock_url, "/health"))
     health_ok = health_status == 200 and isinstance(health, dict) and health.get("status") == "ok"
     record_event(
         stores,
@@ -92,7 +109,8 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
     if not health_ok:
         raise IntakeError("health_failed", "mock health check failed")
 
-    cases_status, cases_body, cases_ms = _timed(fetch, _url(mock_url, "/v1/cases"))
+    authorize("intake", "read_case_list")
+    cases_status, cases_body, cases_ms = _read_dependency(fetch, _url(mock_url, "/v1/cases"))
     cases_ok = cases_status == 200 and isinstance(cases_body, dict) and isinstance(cases_body.get("cases"), list)
     record_event(
         stores,

@@ -1,0 +1,13 @@
+SLO
+95% of FNOL cases are triaged and routed within 15 seconds
+over a rolling 28-day window.
+
+Worked example: 100 cases/day x 28 days = 2800 cases.
+Error budget: 5% = 140 misses in the window.
+Even burn: 5.0 misses/day.
+
+Day 10, 70 misses (50% of budget): freeze_non_reliability_changes.
+Day 20, 140 misses (100% of budget): fail_closed_manual_review.
+
+When the budget is spent, new cases fail closed to manual_review
+and automated record filing stops until the window rolls forward.

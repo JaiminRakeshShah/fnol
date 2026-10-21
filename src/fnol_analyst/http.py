@@ -7,6 +7,8 @@ import urllib.error
 import urllib.request
 from typing import Any, Callable
 
+from fnol_hardening.privilege import authorize_http
+
 Transport = Callable[[str, str, dict | None, dict[str, str] | None], tuple[int, dict[str, Any]]]
 
 
@@ -18,6 +20,7 @@ def default_transport(
     *,
     timeout: float = 10,
 ) -> tuple[int, dict[str, Any]]:
+    authorize_http("analyst", method, url)
     data = None if body is None else json.dumps(body).encode("utf-8")
     req_headers = {"Accept": "application/json"}
     if data is not None:

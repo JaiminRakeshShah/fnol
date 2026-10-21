@@ -1,0 +1,9 @@
+Structured JSON spans (trace_id, span_id, parent_span_id).
+
+{"attributes": {"actor": "policy", "attempt": 1, "backoff_ms": 0, "circuit": "closed", "circuit_before": null, "dependency": "policy", "duration_ms": 2, "error_code": null, "http_status": 200, "status": "ok"}, "name": "tool_http", "parent_span_id": null, "severity": "INFO", "span_id": "c42cf8bdc20f4b7a", "timestamp": "2026-10-21T21:08:08.624423+00:00", "trace_id": "1d22ac0af237404397209cff1e93eda6"}
+
+{"attributes": {"actor": "policy", "attempt": 1, "case_id": "AUTO-D01", "duration_ms": 2, "error_code": null, "input_revision": 1, "input_sha256": "a48c39292e7f3e9bab5b5c4ac47d91899371d57400b9259ddb5b3fabde2eb226", "mock_http_status": 200, "status": "ok", "step": "2"}, "name": "tool_read", "parent_span_id": null, "severity": "INFO", "span_id": "db72840e3bc24ebcad8eae4d4ba3e5b6", "timestamp": "2026-10-21T21:08:08.625898+00:00", "trace_id": "1d22ac0af237404397209cff1e93eda6"}
+
+{"attributes": {"actor": "rules", "case_id": "AUTO-D01", "classification": "collision", "input_revision": 1, "message": "Applied AUTO-TRIAGE-01 precedence to structured fields only", "reasons": [], "route": "standard", "status": "ok", "step": "3"}, "name": "reasoning", "parent_span_id": "127b3a3cead348759389bcdafcd94592", "severity": "INFO", "span_id": "c8158753dba745c6", "timestamp": "2026-10-21T21:08:08.748867+00:00", "trace_id": "1d22ac0af237404397209cff1e93eda6"}
+
+{"attributes": {"actor": "rules", "case_id": "AUTO-D01", "input_revision": 1, "input_sha256": "a48c39292e7f3e9bab5b5c4ac47d91899371d57400b9259ddb5b3fabde2eb226", "output_sha256": "c4f8c735d7528c2ddbb9bd3c53e3b5d8e1618ed52f709e48a44297f333be2311", "rule_version": "AUTO-TRIAGE-01", "status": "ok", "step": "3"}, "name": "route_decision", "parent_span_id": "127b3a3cead348759389bcdafcd94592", "severity": "INFO", "span_id": "997b6dd7f462438abf1f5953a7560e22", "timestamp": "2026-10-21T21:08:08.751240+00:00", "trace_id": "1d22ac0af237404397209cff1e93eda6"}

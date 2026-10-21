@@ -1,0 +1,28 @@
+Simulated claims timeout on the local mock (503 upstream_timeout).
+Backoff base 0.2s, full jitter pinned to the ceiling so the schedule is visible.
+attempt 1 ceiling 200 ms
+attempt 2 ceiling 400 ms
+
+AUTO-D11: one timeout, then the claims payload. Route input recovers.
+http statuses: [503, 200]
+backoff delays seconds: [0.2]
+snapshot available: True
+intake_deliveries: 1
+mock call count increased by: 2
+wall seconds: 0.208
+
+AUTO-D07: every attempt times out. Three attempts, then stop.
+first pass statuses: [503, 503, 503]
+backoff delays seconds: [0.2, 0.4]
+claims available: False
+circuit after 3 failures: open
+mock calls during 3 attempts: 3
+next call statuses: [0]
+next call error: {'error': 'circuit_open'}
+mock calls during open-circuit call: 0
+fallback: claims unavailable, caller routes manual_review, no hang
+
+half-open demo state after threshold: open
+call while open: circuit_open
+after recovery window, next call state: half_open
+after trial success: closed

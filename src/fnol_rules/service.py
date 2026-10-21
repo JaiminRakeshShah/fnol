@@ -103,6 +103,23 @@ def run_rules(
             )
 
     routed = route(fields, policy, snapshot)
+    from fnol_hardening.telemetry import log_span, new_span_id
+
+    log_span({
+        "trace_id": trace_id,
+        "span_id": new_span_id(),
+        "parent_span_id": parent,
+        "event": "reasoning",
+        "actor": "rules",
+        "step": "3",
+        "status": "ok",
+        "case_id": case_id,
+        "input_revision": input_revision,
+        "message": "Applied AUTO-TRIAGE-01 precedence to structured fields only",
+        "route": routed.route,
+        "reasons": list(routed.reasons),
+        "classification": routed.classification,
+    })
     body = asdict(routed)
     body["policy_sha256"] = policy.payload_sha256
     body["claims_sha256"] = claims_sha

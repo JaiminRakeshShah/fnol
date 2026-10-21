@@ -13,6 +13,8 @@ from typing import Any, Callable
 from fnol_foundation.canonical import RestrictedValueError, assert_no_restricted, digest
 from fnol_foundation.events import record_event
 from fnol_foundation.stores import DraftRecord, Stores
+from fnol_hardening.idempotency import IdempotencyStore
+from fnol_hardening.privilege import authorize
 from fnol_shadow.safety import assess
 
 ACTOR = "analyst"
@@ -34,8 +36,27 @@ def submit_review(
     transport: Transport,
     trace_id: str | None = None,
 ) -> DraftRecord:
-    """Step 9. POST the stored draft; continue only when the returned hash matches."""
+    """Step 9. POST the stored draft; continue only when the returned hash matches.
+
+    A second call for a draft that already has a review id returns that review.
+    It does not open another review.
+    """
+    authorize("analyst", "submit_review")
     record = _require_draft(stores, case_id)
+    if record.review_id and record.status in {"in_review", "approved", "created"}:
+        _event(
+            stores,
+            step="9",
+            event="review_requested",
+            case_id=case_id,
+            draft_id=record.draft_id,
+            input_revision=record.input_revision,
+            trace_id=trace_id,
+            status="ok",
+            error_code="idempotent_replay",
+            output_sha256=record.draft_hash,
+        )
+        return record
     started = time.perf_counter()
     status, body = transport(
         "POST",
@@ -121,6 +142,7 @@ def poll_review(
     trace_id: str | None = None,
 ) -> dict[str, Any]:
     """Step 10. Poll the human decision. Never approves."""
+    authorize("analyst", "poll_review")
     record = _require_draft(stores, case_id)
     if not record.review_id:
         raise SubmitError("review_missing", f"no review_id on draft for {case_id}")
@@ -331,7 +353,12 @@ def file_record(
     transport: Transport,
     trace_id: str | None = None,
 ) -> dict[str, Any]:
-    """Steps 11-12. Duplicate check, then POST with Idempotency-Key = draft_id."""
+    """Steps 11-12. Duplicate check, then POST with Idempotency-Key = draft_id.
+
+    The local idempotency store replays a completed create. A second call does
+    not POST again.
+    """
+    authorize("analyst", "file_record")
     record = _require_draft(stores, case_id)
     if record.status not in ("approved", "created"):
         raise SubmitError("not_approved", f"draft for {case_id} is not approved")
@@ -399,6 +426,33 @@ def file_record(
         duration_ms=get_ms,
     )
 
+    store = _idempotency_store(stores)
+    fingerprint = digest({
+        "case_id": case_id,
+        "review_id": record.review_id,
+        "draft_hash": record.draft_hash,
+    })
+    cached = store.get(record.draft_id)
+    if cached is not None:
+        if cached["fingerprint"] != fingerprint:
+            raise SubmitError("idempotency_conflict", "idempotency key reused with a different draft")
+        replay = dict(cached["response"])
+        replay["posted"] = False
+        replay["replayed"] = True
+        _event(
+            stores,
+            step="12",
+            event="record_created",
+            case_id=case_id,
+            draft_id=record.draft_id,
+            input_revision=record.input_revision,
+            trace_id=trace_id,
+            status="ok",
+            error_code="idempotent_replay",
+            output_sha256=record.draft_hash,
+        )
+        return replay
+
     started = time.perf_counter()
     post_status, post_body = transport(
         "POST",
@@ -426,14 +480,17 @@ def file_record(
             duration_ms=post_ms,
             output_sha256=record.draft_hash,
         )
-        return {
+        created = {
             "draft_id": updated.draft_id,
             "status": updated.status,
             "outcome": updated.outcome,
             "record_id": post_body.get("record_id"),
             "posted": True,
+            "replayed": False,
             "http_status": post_status,
         }
+        store.put(record.draft_id, fingerprint, created)
+        return created
     if post_status == 409:
         code = _error_code(post_body)
         outcome = "duplicate" if code == "duplicate_case" else "idempotency_conflict"
@@ -451,14 +508,16 @@ def file_record(
             mock_http_status=post_status,
             duration_ms=post_ms,
         )
-        return {
+        duplicate = {
             "draft_id": record.draft_id,
             "status": "approved",
             "outcome": outcome,
             "record_id": post_body.get("existing_record_id"),
             "posted": False,
+            "replayed": False,
             "http_status": post_status,
         }
+        return duplicate
     if post_status == 403:
         stores.output.update_status(record.draft_id, "approved", outcome="approval_mismatch")
         _event(
@@ -496,6 +555,10 @@ def file_record(
         duration_ms=post_ms,
     )
     raise SubmitError(_error_code(post_body), f"record create failed with HTTP {post_status}")
+
+
+def _idempotency_store(stores: Stores) -> IdempotencyStore:
+    return IdempotencyStore(stores.output.path.parent / "idempotency.sqlite")
 
 
 def _require_draft(stores: Stores, case_id: str) -> DraftRecord:

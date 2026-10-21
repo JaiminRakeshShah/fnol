@@ -67,6 +67,10 @@ def run_citations(
     citation. Citing before rules have run is refused, so a missing claims
     row is not frozen as if the service had failed.
     """
+    from fnol_hardening.privilege import authorize
+
+    authorize("citations", "read_stored_evidence")
+    authorize("citations", "read_procedure")
     started = time.perf_counter()
     revision = stores.input.get_revision(case_id)
     if revision is None:
