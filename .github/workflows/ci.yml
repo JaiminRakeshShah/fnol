@@ -2,7 +2,7 @@ name: ci
 
 on:
   push:
-    branches: [main, rules-server]
+    branches: [main, rules-server, policy_server]
   pull_request:
 
 jobs:

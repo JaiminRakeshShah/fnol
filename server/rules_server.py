@@ -20,7 +20,8 @@ START_ROUTING = {
     "description": (
         "Fetch claims (≤3 attempts), store canonical claims JSON in input.sqlite, "
         "and route cases with AUTO-TRIAGE-01. Requires intake revisions. "
-        "Pass selected_policy_version from Step 2."
+        "The per-case policy decision is read from the Step 2 snapshot in input.sqlite; "
+        "selected_policy_version is an explicit override applied to every routed case."
     ),
     "inputSchema": {
         "type": "object",
@@ -31,7 +32,7 @@ START_ROUTING = {
             },
             "selected_policy_version": {
                 "type": ["string", "null"],
-                "description": "Policy version from Step 2. null forces manual_review.",
+                "description": "Optional override. Omit to use each case's stored Step 2 decision. null forces manual_review.",
             },
             "policy_available": {
                 "type": "boolean",
@@ -76,11 +77,12 @@ def _call_tool(msg_id, params):
     if not isinstance(args, dict):
         return _error(msg_id, -32602, "arguments must be an object")
     try:
-        summary = start_routing(
-            case_id=args.get("case_id"),
-            selected_policy_version=args.get("selected_policy_version"),
-            policy_available=bool(args["policy_available"]) if "policy_available" in args else True,
-        )
+        kwargs = {"case_id": args.get("case_id")}
+        if "selected_policy_version" in args:
+            kwargs["selected_policy_version"] = args["selected_policy_version"]
+        if "policy_available" in args:
+            kwargs["policy_available"] = bool(args["policy_available"])
+        summary = start_routing(**kwargs)
     except Exception as exc:
         return {
             "jsonrpc": "2.0",

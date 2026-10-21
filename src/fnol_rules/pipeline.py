@@ -21,18 +21,44 @@ class RulesError(Exception):
         self.error_code = error_code
 
 
+_UNSET = object()
+
+# Step 2 reasons that mean "policy could not be established" for AUTO-TRIAGE-01.
+_POLICY_UNAVAILABLE = {"unavailable", "not_found", "wording_missing"}
+
+
+def policy_result_for(stores: Stores, case_id: str) -> PolicyResult:
+    """Per-case Step 2 decision rebuilt from the stored policy snapshot.
+
+    No snapshot means the policy server has not run (or stored nothing because the
+    service was unavailable): routing treats that as policy_available=False.
+    """
+    from fnol_policy.service import decision_from_store
+
+    decision = decision_from_store(stores, case_id)
+    if decision is None:
+        return PolicyResult(selected_policy_version=None, policy_available=False)
+    return PolicyResult(
+        selected_policy_version=decision["selected_policy_version"],
+        policy_available=decision["reason"] not in _POLICY_UNAVAILABLE,
+    )
+
+
 def start_routing(
     case_id: str | None = None,
     *,
     mock_url: str | None = None,
     state_dir_path: str | Path | None = None,
-    selected_policy_version: str | None = None,
+    selected_policy_version: str | None | object = _UNSET,
     policy_available: bool = True,
+    policy_results: dict[str, PolicyResult] | None = None,
     fetch: Callable[..., ClaimsFetchResult] | None = None,
 ) -> dict[str, Any]:
     """Load latest intake revision(s), fetch claims, route with AUTO-TRIAGE-01.
 
-    Policy version comes from Step 2 (or the caller) — Rules never selects intervals.
+    Policy comes from Step 2 — Rules never selects intervals. Per case, in order:
+    an entry in policy_results, else the stored policy snapshot in input.sqlite,
+    else the scalar selected_policy_version/policy_available override (tests only).
     Omit case_id to route every case that has a latest input revision.
     """
     mock_url = mock_url or os.environ.get("FNOL_MOCK_URL", "http://127.0.0.1:8767")
@@ -40,15 +66,20 @@ def start_routing(
     stores = Stores(directory)
     try:
         case_ids = _case_ids(stores, case_id)
-        policy = PolicyResult(
-            selected_policy_version=selected_policy_version,
-            policy_available=policy_available,
-        )
         routed = []
         for cid in case_ids:
             revision = stores.input.get_revision(cid)
             if revision is None:
                 raise RulesError("revision_missing", f"no input revision for {cid}")
+            if policy_results and cid in policy_results:
+                policy = policy_results[cid]
+            elif selected_policy_version is not _UNSET:
+                policy = PolicyResult(
+                    selected_policy_version=selected_policy_version,  # type: ignore[arg-type]
+                    policy_available=policy_available,
+                )
+            else:
+                policy = policy_result_for(stores, cid)
             fields = fields_from_payload(revision.payload)
             result = run_rules(
                 cid,
