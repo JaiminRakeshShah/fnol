@@ -1,0 +1,101 @@
+{
+  "name": "fnol-shadow-summary",
+  "description": "Blocks adjudication, restricted synthetic tokens, and prompt attacks on the FNOL shadow summary.",
+  "blockedInputMessaging": "The summary request was blocked.",
+  "blockedOutputsMessaging": "Summary withheld: model output was not a handler summary.",
+  "topicPolicyConfig": {
+    "topicsConfig": [
+      {
+        "name": "coverage-decision",
+        "definition": "Deciding whether a loss is covered, not covered, or payable.",
+        "examples": [
+          "Coverage is approved for this collision.",
+          "This loss is not covered."
+        ],
+        "type": "DENY",
+        "inputAction": "BLOCK",
+        "outputAction": "BLOCK",
+        "inputEnabled": true,
+        "outputEnabled": true
+      },
+      {
+        "name": "claim-denial",
+        "definition": "Approving, denying, or closing a claim.",
+        "examples": [
+          "The claim is denied.",
+          "The claim is approved."
+        ],
+        "type": "DENY",
+        "inputAction": "BLOCK",
+        "outputAction": "BLOCK",
+        "inputEnabled": true,
+        "outputEnabled": true
+      },
+      {
+        "name": "payment-settlement-reserve",
+        "definition": "Authorizing a payment, a settlement amount, or a financial reserve.",
+        "examples": [
+          "We will pay the repair.",
+          "Set the reserve at 5000."
+        ],
+        "type": "DENY",
+        "inputAction": "BLOCK",
+        "outputAction": "BLOCK",
+        "inputEnabled": true,
+        "outputEnabled": true
+      },
+      {
+        "name": "fraud-finding",
+        "definition": "Declaring that a claim, person, or referral is fraudulent or that fraud was found.",
+        "examples": [
+          "This claim is fraud.",
+          "Fraud has been confirmed."
+        ],
+        "type": "DENY",
+        "inputAction": "BLOCK",
+        "outputAction": "BLOCK",
+        "inputEnabled": true,
+        "outputEnabled": true
+      },
+      {
+        "name": "liability-decision",
+        "definition": "Assigning legal liability or fault to a person or other party.",
+        "examples": [
+          "Liability rests with the other driver."
+        ],
+        "type": "DENY",
+        "inputAction": "BLOCK",
+        "outputAction": "BLOCK",
+        "inputEnabled": true,
+        "outputEnabled": true
+      }
+    ]
+  },
+  "contentPolicyConfig": {
+    "filtersConfig": [
+      {
+        "type": "PROMPT_ATTACK",
+        "inputStrength": "HIGH",
+        "outputStrength": "NONE",
+        "inputAction": "BLOCK",
+        "outputAction": "NONE",
+        "inputEnabled": true,
+        "outputEnabled": false
+      }
+    ]
+  },
+  "sensitiveInformationPolicyConfig": {
+    "regexesConfig": [
+      {
+        "name": "synthetic-private-token",
+        "description": "Restricted synthetic private marker",
+        "pattern": "SYNTHETIC-PRIVATE-[A-Za-z0-9-]+",
+        "action": "BLOCK",
+        "inputAction": "BLOCK",
+        "outputAction": "BLOCK",
+        "inputEnabled": true,
+        "outputEnabled": true
+      }
+    ]
+  }
+}
