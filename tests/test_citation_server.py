@@ -259,6 +259,29 @@ class SliceTests(unittest.TestCase):
         })
         self.assertFalse(any(c["source_id"].endswith("-CLAIMS") for c in cites))
 
+    def test_missing_fields_quote_the_not_supplied_lines(self):
+        raw = (
+            "Source ID: AUTO-X-INTAKE\n\nThe car struck a post.\n\n"
+            "Driver name: not supplied\nIncident location: not supplied\nInjury reported: no\n"
+        )
+        cites = _empty(
+            revision={"intake_source": "AUTO-X-INTAKE", "raw_intake": raw, "account_text": "The car struck a post."},
+            missing_information=["driver_name", "incident_location"],
+        )
+        missing = [(c["source_id"], c["quote"]) for c in cites if c["claim"] == "missing_information"]
+        self.assertEqual(missing, [
+            ("AUTO-X-INTAKE", "Driver name: not supplied"),
+            ("AUTO-X-INTAKE", "Incident location: not supplied"),
+        ])
+
+    def test_no_missing_field_citation_when_nothing_is_missing(self):
+        raw = "Driver name: Pat Doe\nIncident location: Main St\n"
+        cites = _empty(
+            revision={"intake_source": "AUTO-X-INTAKE", "raw_intake": raw},
+            missing_information=[],
+        )
+        self.assertFalse(any(c["claim"] == "missing_information" for c in cites))
+
     def test_intake_line_containing_the_marker_is_not_emitted(self):
         cites = _empty(revision={
             "intake_source": "AUTO-X-INTAKE",
@@ -559,6 +582,18 @@ class DevGoldTests(unittest.TestCase):
         self.assertEqual(len(quotes), 1)
         self.assertIn("separate review of the glass repair estimate", quotes[0])
         self.assertIn(quotes[0], (DEV_POLICIES / "AUTO-END-GLASS-01.md").read_text())
+
+    def test_d04_grounds_each_missing_field_in_the_intake(self):
+        missing = [
+            c["quote"] for c in self.by_case["AUTO-D04"]["citations"]
+            if c["claim"] == "missing_information" and c["source_id"] == "AUTO-D04-INTAKE"
+        ]
+        self.assertEqual(missing, ["Driver name: not supplied", "Incident location: not supplied"])
+        for cid, row in self.by_case.items():
+            if cid != "AUTO-D04":
+                self.assertFalse(
+                    any(c["claim"] == "missing_information" for c in row["citations"]), cid
+                )
 
     def test_d10_quotes_the_duplicate_delivery_count(self):
         quotes = [

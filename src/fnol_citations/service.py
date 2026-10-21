@@ -132,6 +132,10 @@ def run_citations(
     version = decision["body"].get("selected_policy_version")
     if not isinstance(version, str) or not version:
         version = None
+    missing_information = route["body"].get("missing_information")
+    if not isinstance(missing_information, list):
+        missing_information = []
+    missing_information = [item for item in missing_information if isinstance(item, str)]
 
     policy_row = stores.input.get_tool_payload(case_id, "policy", revision.revision)
     claims_row = stores.input.get_tool_payload(case_id, "claims", revision.revision)
@@ -150,6 +154,7 @@ def run_citations(
             policy_payload=policy_payload,
             claims_payload=claims_payload,
             selected_policy_version=version,
+            missing_information=missing_information,
         ))
     except RestrictedValueError:
         _event(

@@ -13,6 +13,13 @@ CLAIM_INCIDENT = "incident_evidence"
 CLAIM_CONFLICT = "fact_conflict"
 CLAIM_REPAIR = "repair_amount_conflict"
 CLAIM_HISTORY = "policy_or_claim_history"
+CLAIM_MISSING = "missing_information"
+
+# Allowed missing_information identifiers and the intake label that carries each one.
+_MISSING_LABELS = {
+    "driver_name": "Driver name: ",
+    "incident_location": "Incident location: ",
+}
 
 # Used when no selected interval can be quoted. The first safe member wins.
 POLICY_JSON_KEYS = ("policies", "policy_number", "vehicle_id", "source_id")
@@ -270,6 +277,29 @@ def conflict_quotes(revision: dict) -> list[tuple[str, str]]:
     return found
 
 
+def missing_field_quotes(revision: dict, missing_information: list[str]) -> list[tuple[str, str]]:
+    """The intake line that shows each required field was not supplied.
+
+    A field the parser never found has no line to quote; the omission stays
+    visible through the route decision instead.
+    """
+    found: list[tuple[str, str]] = []
+    raw = revision.get("raw_intake") or ""
+    source_id = revision.get("intake_source")
+    if not isinstance(source_id, str) or not source_id:
+        return found
+    lines = raw.splitlines()
+    for name in missing_information:
+        prefix = _MISSING_LABELS.get(name)
+        if prefix is None:
+            continue
+        for line in lines:
+            if line.startswith(prefix) and _usable(line):
+                found.append((source_id, line))
+                break
+    return found
+
+
 def _tool_source_id(payload: dict, case_id: str, kind: str) -> str:
     source_id = payload.get("source_id")
     if isinstance(source_id, str) and source_id:
@@ -286,11 +316,15 @@ def build_citations(
     policy_payload: dict | None,
     claims_payload: dict | None,
     selected_policy_version: str | None = None,
+    missing_information: list[str] | None = None,
 ) -> list[dict]:
     """Citations for one case.
 
     Each quote is refused at the point it is added when it contains a
     restricted marker. ``seal`` checks the finished list again.
+
+    ``missing_information`` is the route decision's list. Each entry is
+    grounded by the intake line that says the field was not supplied.
 
     Report and estimate are included only when they are relevant: the estimate
     when ``referral_indicator`` is ``repair_amount_conflict``, and each
@@ -323,6 +357,8 @@ def build_citations(
         revision.get("intake_source"),
         intake_quote(revision.get("raw_intake"), revision.get("account_text")),
     )
+    for source_id, quote in missing_field_quotes(revision, missing_information or []):
+        add(CLAIM_MISSING, source_id, quote)
     for source_id, quote in conflict_quotes(revision):
         add(CLAIM_CONFLICT, source_id, quote)
     for source_id, quote in repeated_label_quotes(revision):

@@ -1,6 +1,14 @@
 """Stdio MCP server. The only tool is start_ingestion, which creates input.sqlite."""
 
 import json
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
 
 from fnol_intake.pipeline import start_ingestion
 from server.rpc import json_error, serve as serve_rpc, tool_text
@@ -53,3 +61,7 @@ def _call_tool(msg_id, params):
 
 def serve(stdin=None, stdout=None):
     serve_rpc(handle, stdin=stdin, stdout=stdout)
+
+
+if __name__ == "__main__":
+    serve()
