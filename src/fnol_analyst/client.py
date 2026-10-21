@@ -84,9 +84,13 @@ class AnalystClient:
         return self.servers.cite(case_id)
 
     def prepare(self, case_ids: list[str] | None = None, *, workers: int = 3) -> dict[str, Any]:
-        """Steps 1-4. Intake once, then policy -> rules -> citations per case, pipelined."""
+        """Steps 1-4. Intake once, then policy -> rules -> citations per case, pipelined.
+
+        If any case fails after intake, PrepareError lists every failure. Decisions
+        already written for successful cases remain on disk.
+        """
         ingest = self.ingest()
-        ids = case_ids or [row["case_id"] for row in ingest["revisions"]]
+        ids = case_ids or [row["case_id"] for row in ingest.get("revisions", [])]
         cases = self.servers.prepare_all(ids, workers=workers)
         return {"ingest": ingest, "cases": cases}
 
@@ -141,10 +145,15 @@ class AnalystClient:
         return [self.build(case_id) for case_id in (case_ids or self.case_ids())]
 
     def export(self, path: str | Path, case_ids: list[str] | None = None) -> Path:
-        """Write the contract JSON array: latest draft per case."""
+        """Write the contract JSON array from drafts already on disk.
+
+        Does not build. Run ``build`` or ``prepare`` first.
+        """
         rows = []
         for case_id in case_ids or self.case_ids():
-            record = self.stores.output.latest_draft(case_id) or self.build(case_id)
+            record = self.stores.output.latest_draft(case_id)
+            if record is None:
+                raise AnalystError("draft_missing", f"no draft for {case_id}; run build first")
             rows.append(record.draft)
         target = Path(path)
         target.parent.mkdir(parents=True, exist_ok=True)

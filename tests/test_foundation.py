@@ -39,6 +39,18 @@ class StoreTests(unittest.TestCase):
         self.assertTrue((directory / "output.sqlite").is_file())
         self.assertTrue((directory / "trace.sqlite").is_file())
 
+    def test_sqlite_uses_wal(self):
+        with sqlite3.connect(self.stores.input.path) as db:
+            mode = db.execute("PRAGMA journal_mode").fetchone()[0]
+        self.assertEqual(str(mode).lower(), "wal")
+
+    def test_latest_loss_keys_are_ordered_by_case_id(self):
+        self.stores.input.append_revision("B-CASE", {"loss_type": "collision"})
+        self.stores.input.append_revision("A-CASE", {"loss_type": "theft"})
+        self.stores.input.append_revision("C-CASE", {"loss_type": "glass"})
+        keys = [row["case_id"] for row in self.stores.input.latest_loss_keys()]
+        self.assertEqual(keys, ["A-CASE", "B-CASE", "C-CASE"])
+
     def test_reingest_increments_revision_and_keeps_the_prior_row(self):
         first = self.stores.input.append_revision("AUTO-D01", {"loss_type": "collision"}, "sha-a", "2026-10-01T00:00:00+00:00")
         second = self.stores.input.append_revision("AUTO-D01", {"loss_type": "collision"}, "sha-b", "2026-10-01T01:00:00+00:00")

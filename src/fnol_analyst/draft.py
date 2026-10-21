@@ -72,6 +72,17 @@ def _yes_no(value: bool | None) -> str:
     return "not stated"
 
 
+def _policy_ids(policy: dict[str, Any], citations: dict[str, Any]) -> list[str]:
+    """Prefer the policy decision. An empty list is kept; only a missing list falls back."""
+    ids = policy.get("policy_ids")
+    if isinstance(ids, list):
+        return list(ids)
+    ids = citations.get("policy_ids")
+    if isinstance(ids, list):
+        return list(ids)
+    return []
+
+
 def build_draft(
     *,
     case_id: str,
@@ -89,7 +100,7 @@ def build_draft(
         "case_id": case_id,
         "classification": route.get("classification"),
         "routing": route.get("route"),
-        "policy_ids": list(policy.get("policy_ids") or citations.get("policy_ids") or []),
+        "policy_ids": _policy_ids(policy, citations),
         "facts": {
             "policy_number": facts_row["policy_number"],
             "incident_timestamp": facts_row["incident_timestamp"],

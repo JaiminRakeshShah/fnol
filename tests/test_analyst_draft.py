@@ -131,6 +131,18 @@ class DraftTests(unittest.TestCase):
         self.assertEqual(draft["policy_ids"], ["AUTO-TRIAGE-01"])
         self.assertIn("more than one policy interval", draft["narrative"])
 
+    def test_empty_policy_ids_are_kept(self):
+        draft = build_draft(
+            case_id="AUTO-X",
+            input_revision=1,
+            facts_row={"policy_number": "PA-X", "incident_timestamp": "2026-10-01T12:00:00Z",
+                       "vehicle_id": "VEH-X", "loss_type": "collision", "referral_indicator": "none"},
+            policy=_policy(policy_ids=[]),
+            route=_route(),
+            citations=_citations(),
+        )
+        self.assertEqual(draft["policy_ids"], [])
+
     def test_restricted_marker_is_refused(self):
         with self.assertRaises(RestrictedValueError):
             build_draft(

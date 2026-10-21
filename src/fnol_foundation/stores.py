@@ -272,10 +272,18 @@ class ImmutableRecordError(ValueError):
 
 @contextmanager
 def connect(path):
+    """Open one SQLite connection.
+
+    WAL lets readers proceed while another process writes. busy_timeout matches
+    the connect timeout so multi-process step servers wait instead of failing
+    immediately under contention.
+    """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=15)
     db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("PRAGMA busy_timeout=15000")
     try:
         yield db
         db.commit()
@@ -420,7 +428,7 @@ class InputStore:
         )
 
     def latest_loss_keys(self):
-        """Latest revision of each case: case_id and loss_reference."""
+        """Latest revision of each case: case_id and loss_reference, ordered by case_id."""
         with connect(self.path) as db:
             rows = db.execute(
                 """SELECT case_id, loss_reference
@@ -428,7 +436,8 @@ class InputStore:
                    WHERE revision = (
                        SELECT MAX(revision) FROM input_revisions
                        WHERE case_id = current.case_id
-                   )"""
+                   )
+                   ORDER BY case_id"""
             ).fetchall()
         return [{"case_id": row["case_id"], "loss_reference": row["loss_reference"]} for row in rows]
 

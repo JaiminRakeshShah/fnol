@@ -16,6 +16,7 @@ import json
 import sys
 from fnol_analyst.client import AnalystClient, AnalystError
 from fnol_analyst.mcp import ServerError
+from fnol_analyst.servers import PrepareError
 
 
 def _print(value):
@@ -55,7 +56,7 @@ def main(argv=None) -> int:
     try:
         with client:
             return _run(client, args)
-    except (AnalystError, ServerError) as exc:
+    except (AnalystError, ServerError, PrepareError) as exc:
         code = getattr(exc, "error_code", "server_error")
         print(f"{code}: {exc}", file=sys.stderr)
         return 1

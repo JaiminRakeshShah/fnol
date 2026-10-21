@@ -16,6 +16,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 
 import runtime  # noqa: E402
 from fnol_analyst.client import AnalystClient, AnalystError  # noqa: E402
+from fnol_analyst.servers import PrepareError, ServerSet  # noqa: E402
 from evaluate import evaluate  # noqa: E402
 
 DEV_DOCUMENTS = ROOT / "data" / "dev" / "documents"
@@ -135,6 +136,40 @@ class AnalystClientTests(unittest.TestCase):
     def test_unknown_server_call_is_refused(self):
         with self.assertRaises(KeyError):
             self.client.servers.call("bedrock")
+
+    def test_export_without_a_draft_is_an_error(self):
+        empty = Path(tempfile.mkdtemp(prefix="analyst-export-"))
+        try:
+            lone = AnalystClient(
+                mock_url=self.mock_url,
+                state_dir_path=empty,
+                documents_dir=DEV_DOCUMENTS,
+                policies_dir=DEV_POLICIES,
+            )
+            lone.stores.input.append_revision("AUTO-D01", {"loss_type": "collision"}, "sha-a")
+            with self.assertRaises(AnalystError) as caught:
+                lone.export(empty / "out.json", case_ids=["AUTO-D01"])
+            self.assertEqual(caught.exception.error_code, "draft_missing")
+            lone.close()
+        finally:
+            shutil.rmtree(empty, ignore_errors=True)
+
+    def test_prepare_all_reports_every_failed_case(self):
+        original = ServerSet.prepare_case
+
+        def flaky(self, case_id):
+            if case_id == "AUTO-D02":
+                raise RuntimeError("forced failure")
+            return original(self, case_id)
+
+        ServerSet.prepare_case = flaky
+        try:
+            with self.assertRaises(PrepareError) as caught:
+                self.client.servers.prepare_all(["AUTO-D01", "AUTO-D02"], workers=2)
+            self.assertEqual(set(caught.exception.failures), {"AUTO-D02"})
+            self.assertIn("AUTO-D01", self.client.servers.prepare_all(["AUTO-D01"], workers=1))
+        finally:
+            ServerSet.prepare_case = original
 
 
 if __name__ == "__main__":

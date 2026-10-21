@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +24,21 @@ TOOLS = {
     "rules": "start_routing",
     "citations": "start_citations",
 }
+_ROW_KEYS = {
+    "policy": "policies",
+    "rules": "routes",
+    "citations": "cases",
+}
+
+
+class PrepareError(RuntimeError):
+    """One or more cases failed during prepare_all. Successful cases stay recorded."""
+
+    def __init__(self, failures: dict[str, Exception]):
+        self.failures = dict(failures)
+        self.error_code = "prepare_failed"
+        detail = "; ".join(f"{case_id}: {exc}" for case_id, exc in self.failures.items())
+        super().__init__(f"prepare failed for {detail}")
 
 
 class ServerSet:
@@ -87,15 +102,38 @@ class ServerSet:
         cases they overlap: one case can sit in policy while another is in
         rules and a third is in citations.
         """
-        policy = self.select_policy(case_id)["policies"][0]
-        route = self.route(case_id)["routes"][0]
-        cited = self.cite(case_id)["cases"][0]
+        policy = self._one_row(self.select_policy(case_id), "policy", case_id)
+        route = self._one_row(self.route(case_id), "rules", case_id)
+        cited = self._one_row(self.cite(case_id), "citations", case_id)
         return {"case_id": case_id, "policy": policy, "route": route, "citations": cited}
 
     def prepare_all(self, case_ids: list[str], *, workers: int = 3) -> dict[str, dict[str, Any]]:
-        """Run prepare_case for many cases. Each server still handles one call at a time."""
+        """Run prepare_case for many cases. Each server still handles one call at a time.
+
+        Every case is attempted. If any fail, successful writes stay on disk and
+        PrepareError lists every failure.
+        """
         results: dict[str, dict[str, Any]] = {}
+        failures: dict[str, Exception] = {}
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            for case_id, result in zip(case_ids, pool.map(self.prepare_case, case_ids)):
-                results[case_id] = result
+            futures = {pool.submit(self.prepare_case, case_id): case_id for case_id in case_ids}
+            for future in as_completed(futures):
+                case_id = futures[future]
+                try:
+                    results[case_id] = future.result()
+                except Exception as exc:
+                    failures[case_id] = exc
+        if failures:
+            raise PrepareError(failures)
         return results
+
+    @staticmethod
+    def _one_row(summary: dict[str, Any], step: str, case_id: str) -> dict[str, Any]:
+        key = _ROW_KEYS[step]
+        rows = summary.get(key)
+        if not isinstance(rows, list) or not rows:
+            raise RuntimeError(f"{step} returned no row for {case_id}")
+        row = rows[0]
+        if not isinstance(row, dict):
+            raise RuntimeError(f"{step} row for {case_id} was not an object")
+        return row

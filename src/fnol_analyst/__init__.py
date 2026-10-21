@@ -5,5 +5,6 @@ Bedrock shadow path are out of this package.
 """
 
 from fnol_analyst.client import AnalystClient, AnalystError
+from fnol_analyst.servers import PrepareError
 
-__all__ = ["AnalystClient", "AnalystError"]
+__all__ = ["AnalystClient", "AnalystError", "PrepareError"]
