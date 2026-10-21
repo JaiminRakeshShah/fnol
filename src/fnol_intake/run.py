@@ -7,7 +7,8 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
-from fnol_foundation.canonical import digest
+from fnol_foundation.canonical import EVIDENCE_TEXT_COLUMNS, RESTRICTED_MARKERS, RestrictedValueError, digest
+from fnol_foundation.events import record_event
 
 from fnol_intake.parse import (
     document_kind,
@@ -56,8 +57,10 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def _span():
-    return uuid.uuid4().hex
+def _timed(fetch, url):
+    started = time.perf_counter()
+    status, body = fetch(url)
+    return status, body, int((time.perf_counter() - started) * 1000)
 
 
 def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
@@ -65,45 +68,54 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
 
     Case ids and document source ids come from GET /v1/cases. A listed source
     with no file fails the run with error_code document_missing and writes no
-    revision for that case. Calling this again inserts the next revision.
+    revision for that case. A restricted marker in a structured field is dropped.
+    The raw file is still stored. One refused case does not drop the others.
+    Calling this again inserts the next revision.
     """
     fetch = transport or default_transport
     trace_id = uuid.uuid4().hex
-    health_status, health = fetch(_url(mock_url, "/health"))
-    stores.trace.append_event(
+    health_status, health, health_ms = _timed(fetch, _url(mock_url, "/health"))
+    health_ok = health_status == 200 and isinstance(health, dict) and health.get("status") == "ok"
+    record_event(
+        stores,
         trace_id=trace_id,
-        span_id=_span(),
         step="1",
+        event="health",
         actor="intake",
-        status="ok" if health_status == 200 and health.get("status") == "ok" else "error",
-        error_code=None if health_status == 200 and health.get("status") == "ok" else "health_failed",
+        status="ok" if health_ok else "error",
+        error_code=None if health_ok else "health_failed",
         mock_http_status=health_status,
+        duration_ms=health_ms,
         started_at=_now(),
         attempt=1,
     )
-    if health_status != 200 or health.get("status") != "ok":
+    if not health_ok:
         raise IntakeError("health_failed", "mock health check failed")
 
-    cases_status, cases_body = fetch(_url(mock_url, "/v1/cases"))
-    stores.trace.append_event(
+    cases_status, cases_body, cases_ms = _timed(fetch, _url(mock_url, "/v1/cases"))
+    cases_ok = cases_status == 200 and isinstance(cases_body, dict) and isinstance(cases_body.get("cases"), list)
+    record_event(
+        stores,
         trace_id=trace_id,
-        span_id=_span(),
         step="1",
+        event="cases",
         actor="intake",
-        status="ok" if cases_status == 200 else "error",
-        error_code=None if cases_status == 200 else "cases_unavailable",
+        status="ok" if cases_ok else "error",
+        error_code=None if cases_ok else "cases_unavailable",
         mock_http_status=cases_status,
+        duration_ms=cases_ms,
         started_at=_now(),
         attempt=1,
     )
-    if cases_status != 200 or not isinstance(cases_body.get("cases"), list):
+    if not cases_ok:
         raise IntakeError("cases_unavailable", "case list was not available")
 
     procedures = load_procedures(policies_dir)
-    stores.trace.append_event(
+    record_event(
+        stores,
         trace_id=trace_id,
-        span_id=_span(),
         step="1",
+        event="procedures",
         actor="intake",
         status="ok",
         output_sha256=digest([{"sha256": item["sha256"], "source_id": item["source_id"]} for item in procedures]),
@@ -115,10 +127,11 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
     loaded, missing = _read_cases(cases, documents_dir)
     if missing:
         for item in missing:
-            stores.trace.append_event(
+            record_event(
+                stores,
                 trace_id=trace_id,
-                span_id=_span(),
                 step="1",
+                event="document_missing",
                 actor="intake",
                 status="error",
                 case_id=item["case_id"],
@@ -129,21 +142,38 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
         raise DocumentMissing(missing)
 
     stores.input.store_procedures(procedures)
-    payloads = [_payload(item) for item in loaded]
-    from fnol_intake.pipeline import apply_duplicate_flags
-    apply_duplicate_flags(payloads, stores.input.latest_loss_keys())
+    payloads = [_scrub_structured(_payload(item)) for item in loaded]
     revisions = []
+    refused = []
     for payload in payloads:
         started = time.perf_counter()
-        revision = stores.input.append_revision(
-            payload["case_id"],
-            payload,
-            document_set_sha256=payload["document_set_sha256"],
-        )
-        stores.trace.append_event(
+        try:
+            revision = stores.input.append_revision(
+                payload["case_id"],
+                payload,
+                document_set_sha256=payload["document_set_sha256"],
+                trace_id=trace_id,
+            )
+        except RestrictedValueError:
+            record_event(
+                stores,
+                trace_id=trace_id,
+                step="1",
+                event="revision_refused",
+                actor="intake",
+                status="error",
+                case_id=payload["case_id"],
+                error_code="restricted_value",
+                started_at=_now(),
+                attempt=1,
+            )
+            refused.append(payload["case_id"])
+            continue
+        record_event(
+            stores,
             trace_id=trace_id,
-            span_id=_span(),
             step="1",
+            event="revision",
             actor="intake",
             status="ok",
             case_id=payload["case_id"],
@@ -154,7 +184,12 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
             attempt=1,
         )
         revisions.append(revision)
-    return {"trace_id": trace_id, "revisions": revisions, "procedure_sources": procedures}
+    return {
+        "trace_id": trace_id,
+        "revisions": revisions,
+        "refused": refused,
+        "procedure_sources": procedures,
+    }
 
 
 def _unique_cases(cases):
@@ -204,8 +239,35 @@ def _notes(lines):
     return "\n".join(lines)
 
 
+def _restricted(value):
+    return isinstance(value, str) and any(marker in value for marker in RESTRICTED_MARKERS)
+
+
+def _scrub_structured(payload):
+    """Drop a restricted marker from structured fields. Raw document text stays.
+
+    A driver name or loss type that is itself the marker is not usable. The file
+    text is kept so a later citation can quote the safe lines and skip the marker.
+    """
+    cleaned = dict(payload)
+    for key, value in payload.items():
+        if key in EVIDENCE_TEXT_COLUMNS or not _restricted(value):
+            continue
+        cleaned[key] = None
+    if _restricted(payload.get("driver_name")):
+        cleaned["driver_name_supplied"] = False
+    if _restricted(payload.get("incident_location")):
+        cleaned["incident_location_supplied"] = False
+    if _restricted(payload.get("injury_reported_raw")):
+        cleaned["injury_reported"] = None
+    if _restricted(payload.get("vehicle_drivable_raw")):
+        cleaned["vehicle_drivable"] = None
+    return cleaned
+
+
 def _payload(item):
     parsed_docs = []
+    repeated = []
     intake_parsed = None
     intake_doc = None
     estimate = None
@@ -213,6 +275,9 @@ def _payload(item):
     for document in item["documents"]:
         kind = document_kind(document["source_id"], item["intake_source"])
         parsed = parse_document(document["raw_text"], labels_for(kind))
+        for name in parsed["duplicate_fields"]:
+            if name not in repeated:
+                repeated.append(name)
         entry = {
             "source_id": document["source_id"],
             "kind": kind,
@@ -276,4 +341,5 @@ def _payload(item):
         "reported_loss_type": report_fields.get("reported_loss_type"),
         "report_notes": None if report is None else _notes(report["unlabeled_lines"]),
         "raw_report": None if report is None else report["raw_text"],
+        "repeated_fields": repeated,
     }

@@ -52,6 +52,52 @@ def test_always_timeout_after_three_attempts():
     assert all(a.status == 503 for a in result.attempts)
 
 
+def test_server_error_is_retried():
+    calls = {"n": 0}
+
+    def get(_url):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return 500, {"error": "http_500"}
+        return 200, {"existing_claims": [], "intake_deliveries": 1, "source_id": "X"}
+
+    result = fetch_claims("AUTO-D01", "http://example", get=get)
+    assert calls["n"] == 2
+    assert result.snapshot.available is True
+
+
+def test_not_found_is_not_retried():
+    calls = {"n": 0}
+
+    def get(_url):
+        calls["n"] += 1
+        return 404, {"error": "not_found"}
+
+    result = fetch_claims("AUTO-D01", "http://example", get=get)
+    assert calls["n"] == 1
+    assert result.snapshot.available is False
+    assert result.raw_json is None
+
+
+def test_malformed_success_is_unavailable():
+    def get(_url):
+        return 200, {"existing_claims": "nope", "intake_deliveries": "2"}
+
+    result = fetch_claims("AUTO-D01", "http://example", get=get)
+    assert result.snapshot.available is False
+    assert result.raw_json is None
+    assert len(result.attempts) == 1
+
+
+def test_slash_in_case_id_is_rejected():
+    try:
+        fetch_claims("AUTO/D01", "http://example", get=lambda _url: (200, {}))
+    except ValueError as exc:
+        assert "case_id" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
 def test_max_attempts_respected():
     calls = {"n": 0}
 

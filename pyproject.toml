@@ -3,7 +3,7 @@ name = "fde-auto-fnol-training"
 version = "1.0.0"
 description = "Fictional Associate FDE capstone simulator and fixtures"
 requires-python = ">=3.12,<3.13"
-dependencies = ["mcp>=2"]
+dependencies = []
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
@@ -14,6 +14,3 @@ package = false
 [tool.pytest.ini_options]
 pythonpath = ["src", "."]
 testpaths = ["tests"]
-
-[tool.pyright]
-extraPaths = ["src", "tools"]

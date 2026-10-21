@@ -8,11 +8,18 @@ import json
 import os
 import sqlite3
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fnol_foundation.canonical import assert_no_restricted, canonical, digest
+from fnol_foundation.canonical import (
+    EVIDENCE_TEXT_COLUMNS,
+    assert_no_restricted,
+    canonical,
+    digest,
+    redact_for_store,
+)
 
 TRACE_COLUMNS = (
     "event_id",
@@ -38,6 +45,7 @@ TRACE_COLUMNS = (
     "output_tokens",
     "shadow_narrative",
     "shadow_safety_status",
+    "event",
 )
 
 _TRACE_NOT_NULL = {"trace_id", "span_id", "step", "actor", "status"}
@@ -60,7 +68,6 @@ INPUT_COLUMNS = (
     "vehicle_drivable",
     "referral_indicator",
     "loss_reference",
-    "duplicates",
     "intake_sha256",
     "raw_intake",
     "intake_notes",
@@ -79,6 +86,7 @@ INPUT_COLUMNS = (
     "reported_loss_type",
     "report_notes",
     "raw_report",
+    "repeated_fields",
 )
 
 BOOL_COLUMNS = {
@@ -94,6 +102,7 @@ CREATE TABLE IF NOT EXISTS input_revisions (
   revision INTEGER NOT NULL,
   ingested_at TEXT NOT NULL,
   document_set_sha256 TEXT NOT NULL,
+  trace_id TEXT,
   intake_source TEXT,
   account_text TEXT,
   incident_timestamp TEXT,
@@ -110,7 +119,6 @@ CREATE TABLE IF NOT EXISTS input_revisions (
   vehicle_drivable INTEGER,
   referral_indicator TEXT,
   loss_reference TEXT,
-  duplicates INTEGER NOT NULL DEFAULT 0,
   intake_sha256 TEXT,
   raw_intake TEXT,
   intake_notes TEXT,
@@ -129,6 +137,7 @@ CREATE TABLE IF NOT EXISTS input_revisions (
   reported_loss_type TEXT,
   report_notes TEXT,
   raw_report TEXT,
+  repeated_fields TEXT,
   UNIQUE (case_id, revision)
 );
 CREATE TABLE IF NOT EXISTS procedure_sources (
@@ -151,13 +160,49 @@ END;
 TOOL_PAYLOAD_SCHEMA = """
 CREATE TABLE IF NOT EXISTS tool_payloads (
   case_id TEXT NOT NULL,
+  input_revision INTEGER NOT NULL,
   tool TEXT NOT NULL,
   raw_json TEXT NOT NULL,
   sha256 TEXT NOT NULL,
   stored_at TEXT NOT NULL,
-  PRIMARY KEY (case_id, tool)
+  PRIMARY KEY (case_id, input_revision, tool)
 );
+CREATE TRIGGER IF NOT EXISTS tool_payloads_no_update
+BEFORE UPDATE ON tool_payloads
+BEGIN
+  SELECT RAISE(ABORT, 'tool_payloads is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS tool_payloads_no_delete
+BEFORE DELETE ON tool_payloads
+BEGIN
+  SELECT RAISE(ABORT, 'tool_payloads is append-only');
+END;
 """
+
+DECISION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS decisions (
+  case_id TEXT NOT NULL,
+  input_revision INTEGER NOT NULL,
+  kind TEXT NOT NULL,
+  body_json TEXT NOT NULL,
+  policy_sha256 TEXT,
+  claims_sha256 TEXT,
+  stored_at TEXT NOT NULL,
+  PRIMARY KEY (case_id, input_revision, kind)
+);
+CREATE TRIGGER IF NOT EXISTS decisions_no_update
+BEFORE UPDATE ON decisions
+BEGIN
+  SELECT RAISE(ABORT, 'decisions is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS decisions_no_delete
+BEFORE DELETE ON decisions
+BEGIN
+  SELECT RAISE(ABORT, 'decisions is append-only');
+END;
+"""
+
+_DECISION_KINDS = frozenset({"policy", "route", "citations"})
 
 OUTPUT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS drafts (
@@ -221,12 +266,24 @@ def _as_text(value):
     return value
 
 
+class ImmutableRecordError(ValueError):
+    """A second write tried to change an append-only payload or decision."""
+
+
+@contextmanager
 def connect(path):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=15)
     db.row_factory = sqlite3.Row
-    return db
+    try:
+        yield db
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
 
 
 @dataclass(frozen=True)
@@ -236,6 +293,7 @@ class Revision:
     ingested_at: str
     document_set_sha256: str
     payload: dict
+    trace_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -252,8 +310,10 @@ class DraftRecord:
 
 
 def _bind_value(column, value):
-    if column == "duplicates":
-        return 1 if value else 0
+    if column == "repeated_fields":
+        if not value:
+            return None
+        return canonical(list(value))
     if column in BOOL_COLUMNS:
         if value is None:
             return None
@@ -264,6 +324,10 @@ def _bind_value(column, value):
 def _read_value(column, value):
     if column in BOOL_COLUMNS and value is not None:
         return bool(value)
+    if column == "repeated_fields":
+        if not value:
+            return []
+        return json.loads(value)
     return value
 
 
@@ -271,32 +335,50 @@ def _row_payload(row):
     return {column: _read_value(column, row[column]) for column in INPUT_COLUMNS}
 
 
+def _table_names(db, table):
+    return {row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
+
+
+def _add_column(db, table, name, declaration):
+    names = _table_names(db, table)
+    if names and name not in names:
+        db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
+
+
 class InputStore:
     def __init__(self, path):
         self.path = Path(path)
         with connect(self.path) as db:
-            existing = {row["name"] for row in db.execute("PRAGMA table_info(input_revisions)").fetchall()}
-            if "payload_json" in existing:
-                db.executescript("DROP TABLE IF EXISTS input_revisions;")
             db.executescript(INPUT_SCHEMA)
+            _add_column(db, "input_revisions", "trace_id", "TEXT")
+            _add_column(db, "input_revisions", "repeated_fields", "TEXT")
+            names = _table_names(db, "tool_payloads")
+            if names and "input_revision" not in names:
+                db.execute("DROP TABLE tool_payloads")
             db.executescript(TOOL_PAYLOAD_SCHEMA)
-            names = {row["name"] for row in db.execute("PRAGMA table_info(input_revisions)").fetchall()}
-            if "duplicates" not in names:
-                db.execute("ALTER TABLE input_revisions ADD COLUMN duplicates INTEGER NOT NULL DEFAULT 0")
+            db.executescript(DECISION_SCHEMA)
 
-    def append_revision(self, case_id, payload, document_set_sha256=None, ingested_at=None):
-        """Insert the next revision for case_id. Re-ingesting always increments."""
+    def append_revision(self, case_id, payload, document_set_sha256=None, ingested_at=None, trace_id=None):
+        """Insert the next revision for case_id. Re-ingesting always increments.
+
+        Raw document columns may contain a restricted marker. Structured fields may not.
+        Callers must not copy the raw columns into the trace.
+        """
         if not isinstance(case_id, str) or not case_id:
             raise ValueError("case_id is required")
         if not isinstance(payload, dict):
             raise TypeError("payload must be a JSON object")
-        assert_no_restricted(payload)
+        assert_no_restricted({
+            key: value for key, value in payload.items() if key not in EVIDENCE_TEXT_COLUMNS
+        })
         sha = document_set_sha256 if document_set_sha256 is not None else digest(payload)
         if not isinstance(sha, str) or not sha:
             raise ValueError("document_set_sha256 must be a non-empty string")
         assert_no_restricted(sha)
+        if trace_id is not None:
+            assert_no_restricted(trace_id)
         when = _as_text(ingested_at) or utc_now()
-        columns = ["case_id", "revision", "ingested_at", "document_set_sha256", *INPUT_COLUMNS]
+        columns = ["case_id", "revision", "ingested_at", "document_set_sha256", "trace_id", *INPUT_COLUMNS]
         placeholders = ", ".join("?" for _ in columns)
         with connect(self.path) as db:
             db.execute("BEGIN IMMEDIATE")
@@ -305,7 +387,7 @@ class InputStore:
                 (case_id,),
             ).fetchone()
             revision = int(row[0]) + 1
-            values = [case_id, revision, when, sha]
+            values = [case_id, revision, when, sha, trace_id]
             values.extend(_bind_value(column, payload.get(column)) for column in INPUT_COLUMNS)
             db.execute(
                 f"INSERT INTO input_revisions ({', '.join(columns)}) VALUES ({placeholders})",
@@ -334,6 +416,7 @@ class InputStore:
             ingested_at=row["ingested_at"],
             document_set_sha256=row["document_set_sha256"],
             payload=_row_payload(row),
+            trace_id=row["trace_id"],
         )
 
     def latest_loss_keys(self):
@@ -367,35 +450,46 @@ class InputStore:
             ).fetchall()
         return [{"source_id": row["source_id"], "sha256": row["sha256"], "loaded_at": row["loaded_at"]} for row in rows]
 
-    def put_tool_payload(self, case_id, tool, raw_json):
-        """Store one enterprise tool snapshot (e.g. claims) as canonical JSON."""
-        if not isinstance(case_id, str) or not case_id:
-            raise ValueError("case_id is required")
-        if not isinstance(tool, str) or not tool:
-            raise ValueError("tool is required")
+    def put_tool_payload(self, case_id, tool, raw_json, input_revision):
+        """Store one redacted tool snapshot for this input revision.
+
+        private_token keys are dropped. A second write of different bytes is refused.
+        The same bytes may be written again and return the existing sha256.
+        """
+        self._require_revision(case_id, input_revision)
+        if tool not in {"policy", "claims"}:
+            raise ValueError("tool is not available")
         if not isinstance(raw_json, dict):
             raise TypeError("raw_json must be a JSON object")
-        assert_no_restricted(raw_json)
-        body = canonical(raw_json)
-        sha = digest(raw_json)
+        cleaned = redact_for_store(raw_json)
+        body = canonical(cleaned)
+        sha = digest(cleaned)
         when = utc_now()
         with connect(self.path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                """SELECT sha256 FROM tool_payloads
+                   WHERE case_id = ? AND input_revision = ? AND tool = ?""",
+                (case_id, input_revision, tool),
+            ).fetchone()
+            if existing is not None:
+                if existing["sha256"] == sha:
+                    return sha
+                raise ImmutableRecordError("tool payload already stored for this revision")
             db.execute(
-                """INSERT INTO tool_payloads (case_id, tool, raw_json, sha256, stored_at)
-                   VALUES (?, ?, ?, ?, ?)
-                   ON CONFLICT(case_id, tool) DO UPDATE SET
-                     raw_json = excluded.raw_json,
-                     sha256 = excluded.sha256,
-                     stored_at = excluded.stored_at""",
-                (case_id, tool, body, sha, when),
+                """INSERT INTO tool_payloads
+                   (case_id, input_revision, tool, raw_json, sha256, stored_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (case_id, input_revision, tool, body, sha, when),
             )
         return sha
 
-    def get_tool_payload(self, case_id, tool):
+    def get_tool_payload(self, case_id, tool, input_revision):
         with connect(self.path) as db:
             row = db.execute(
-                "SELECT raw_json, sha256, stored_at FROM tool_payloads WHERE case_id = ? AND tool = ?",
-                (case_id, tool),
+                """SELECT raw_json, sha256, stored_at FROM tool_payloads
+                   WHERE case_id = ? AND input_revision = ? AND tool = ?""",
+                (case_id, input_revision, tool),
             ).fetchone()
         if row is None:
             return None
@@ -404,6 +498,68 @@ class InputStore:
             "sha256": row["sha256"],
             "stored_at": row["stored_at"],
         }
+
+    def put_decision(self, case_id, input_revision, kind, body, policy_sha256=None, claims_sha256=None):
+        """Append one policy, route, or citations decision bound to an input revision."""
+        self._require_revision(case_id, input_revision)
+        if kind not in _DECISION_KINDS:
+            raise ValueError("decision kind is not available")
+        if not isinstance(body, dict):
+            raise TypeError("decision body must be a JSON object")
+        assert_no_restricted(body)
+        if policy_sha256 is not None:
+            assert_no_restricted(policy_sha256)
+        if claims_sha256 is not None:
+            assert_no_restricted(claims_sha256)
+        stored = canonical(body)
+        when = utc_now()
+        with connect(self.path) as db:
+            db.execute("BEGIN IMMEDIATE")
+            existing = db.execute(
+                """SELECT body_json, policy_sha256, claims_sha256 FROM decisions
+                   WHERE case_id = ? AND input_revision = ? AND kind = ?""",
+                (case_id, input_revision, kind),
+            ).fetchone()
+            if existing is not None:
+                same = (
+                    existing["body_json"] == stored
+                    and existing["policy_sha256"] == policy_sha256
+                    and existing["claims_sha256"] == claims_sha256
+                )
+                if not same:
+                    raise ImmutableRecordError("decision already stored for this revision")
+            else:
+                db.execute(
+                    """INSERT INTO decisions
+                       (case_id, input_revision, kind, body_json, policy_sha256, claims_sha256, stored_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (case_id, input_revision, kind, stored, policy_sha256, claims_sha256, when),
+                )
+        return self.get_decision(case_id, input_revision, kind)
+
+    def get_decision(self, case_id, input_revision, kind):
+        with connect(self.path) as db:
+            row = db.execute(
+                """SELECT body_json, policy_sha256, claims_sha256, stored_at FROM decisions
+                   WHERE case_id = ? AND input_revision = ? AND kind = ?""",
+                (case_id, input_revision, kind),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "body": json.loads(row["body_json"]),
+            "policy_sha256": row["policy_sha256"],
+            "claims_sha256": row["claims_sha256"],
+            "stored_at": row["stored_at"],
+        }
+
+    def _require_revision(self, case_id, input_revision):
+        if not isinstance(case_id, str) or not case_id:
+            raise ValueError("case_id is required")
+        if not isinstance(input_revision, int) or isinstance(input_revision, bool) or input_revision < 1:
+            raise ValueError("input_revision is required")
+        if self.get_revision(case_id, input_revision) is None:
+            raise ValueError("input revision does not exist")
 
 
 class OutputStore:
@@ -469,6 +625,7 @@ class TraceStore:
         self.path = Path(path)
         with connect(self.path) as db:
             db.executescript(TRACE_SCHEMA)
+            _add_column(db, "trace_events", "event", "TEXT")
 
     def append_event(self, **fields):
         """Insert one trace event. Updates and deletes are rejected by triggers."""
@@ -508,9 +665,6 @@ class Stores:
         self.input = InputStore(self.directory / "input.sqlite")
         self.output = OutputStore(self.directory / "output.sqlite")
         self.trace = TraceStore(self.directory / "trace.sqlite")
-
-    def close(self):
-        return None
 
     def drop(self):
         for path in (self.input.path, self.output.path, self.trace.path):

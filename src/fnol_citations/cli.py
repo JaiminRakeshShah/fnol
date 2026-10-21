@@ -1,22 +1,27 @@
-"""Command line for the citations server."""
+"""Command line for the citations pipeline."""
 
 import argparse
 import json
+import sys
 
 from fnol_citations.pipeline import start_citations
 from fnol_citations.service import CitationError
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description="Slice exact evidence quotes for each ingested case.")
-    parser.add_argument("--state-dir", default=None, help="Directory for the SQLite files. Defaults to FNOL_STATE_DIR or .state.")
-    parser.add_argument("--policies-dir", default=None, help="Policy wording files. Defaults to FNOL_POLICIES_DIR or data/dev/policies.")
-    parser.add_argument("--case-id", default=None, help="Optional. Omit to cite every case with an input revision.")
+    parser = argparse.ArgumentParser(description="Slice exact evidence quotes for ingested FNOL cases.")
+    parser.add_argument("--state-dir", default=None)
+    parser.add_argument("--policies-dir", default=None)
+    parser.add_argument("--case-id", default=None)
     args = parser.parse_args(argv)
     try:
-        result = start_citations(args.case_id, state_dir_path=args.state_dir, policies_dir=args.policies_dir)
+        summary = start_citations(
+            args.case_id,
+            state_dir_path=args.state_dir,
+            policies_dir=args.policies_dir,
+        )
     except CitationError as exc:
-        print(f"{exc.error_code}: {exc}")
+        print(f"{exc.error_code}: {exc}", file=sys.stderr)
         return 1
-    print(json.dumps(result, indent=2))
+    print(json.dumps(summary, indent=2))
     return 0

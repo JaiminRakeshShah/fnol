@@ -71,7 +71,6 @@ class StoreTests(unittest.TestCase):
         self.stores = Stores(self.tmp.name)
 
     def tearDown(self):
-        self.stores.close()
         self.tmp.cleanup()
 
     def _events(self, case_id):
@@ -114,8 +113,7 @@ class StoreTests(unittest.TestCase):
         for case_id in ("AUTO-D09", "AUTO-D10"):
             payload = by_id[case_id].payload
             self.assertEqual(payload["loss_reference"], "auto-loss-nine")
-            self.assertEqual(payload["duplicates"], 1)
-        self.assertEqual(by_id["AUTO-D08"].payload["duplicates"], 0)
+            self.assertNotIn("duplicates", payload)
         source_ids = {item["source_id"] for item in self.stores.input.list_procedures()}
         self.assertEqual(source_ids, {"AUTO-TRIAGE-01", "AUTO-WORDING-V1", "AUTO-WORDING-V2", "AUTO-END-GLASS-01"})
         again = run_intake(
@@ -123,6 +121,108 @@ class StoreTests(unittest.TestCase):
             transport=_transport((200, {"status": "ok"}), (200, {"cases": cases["cases"][:1]})),
         )
         self.assertEqual(again["revisions"][0].revision, 2)
+        self.assertEqual(again["revisions"][0].trace_id, again["trace_id"])
+
+    def test_repeated_label_is_stored_on_the_revision(self):
+        with tempfile.TemporaryDirectory() as docs:
+            text = textwrap.dedent("""\
+                # Notice
+
+                Source ID: CASE-INTAKE
+
+                Account.
+
+                Incident timestamp: 2026-10-01T12:00:00Z
+                Policy number: PA-1
+                Vehicle ID: VEH-1
+                Loss type: collision
+                Driver name: First Driver
+                Driver name: Second Driver
+                Incident location: Cedar Street
+                Injury reported: no
+                Vehicle drivable: yes
+                Referral indicator: none
+                Loss reference: loss-1
+            """)
+            (Path(docs) / "CASE-INTAKE.md").write_text(text)
+            result = run_intake(
+                self.stores, "http://mock", docs, DEV_POLICIES,
+                transport=_transport(
+                    (200, {"status": "ok"}),
+                    (200, {"cases": [{
+                        "case_id": "CASE",
+                        "intake_source": "CASE-INTAKE",
+                        "documents": ["CASE-INTAKE"],
+                    }]}),
+                ),
+            )
+        payload = result["revisions"][0].payload
+        self.assertEqual(payload["driver_name"], "First Driver")
+        self.assertEqual(payload["repeated_fields"], ["driver_name"])
+        self.assertEqual(result["revisions"][0].trace_id, result["trace_id"])
+        self.assertEqual(result["refused"], [])
+
+    def test_marker_in_the_file_is_kept_as_evidence_and_does_not_stop_the_batch(self):
+        with tempfile.TemporaryDirectory() as docs:
+            hostile = textwrap.dedent("""\
+                # Notice
+
+                Source ID: CASE-A-INTAKE
+
+                The note names SYNTHETIC-PRIVATE-CASE-A and must not be copied into the trace.
+
+                Incident timestamp: 2026-10-01T12:00:00Z
+                Policy number: PA-A
+                Vehicle ID: VEH-A
+                Loss type: collision
+                Driver name: SYNTHETIC-PRIVATE-CASE-A
+                Incident location: Cedar Street
+                Injury reported: no
+                Vehicle drivable: yes
+                Referral indicator: none
+                Loss reference: loss-a
+            """)
+            clean = textwrap.dedent("""\
+                # Notice
+
+                Source ID: CASE-B-INTAKE
+
+                A parked car was struck.
+
+                Incident timestamp: 2026-10-01T12:00:00Z
+                Policy number: PA-B
+                Vehicle ID: VEH-B
+                Loss type: collision
+                Driver name: Alex Rowan
+                Incident location: Cedar Street
+                Injury reported: no
+                Vehicle drivable: yes
+                Referral indicator: none
+                Loss reference: loss-b
+            """)
+            (Path(docs) / "CASE-A-INTAKE.md").write_text(hostile)
+            (Path(docs) / "CASE-B-INTAKE.md").write_text(clean)
+            result = run_intake(
+                self.stores, "http://mock", docs, DEV_POLICIES,
+                transport=_transport(
+                    (200, {"status": "ok"}),
+                    (200, {"cases": [
+                        {"case_id": "CASE-A", "intake_source": "CASE-A-INTAKE", "documents": ["CASE-A-INTAKE"]},
+                        {"case_id": "CASE-B", "intake_source": "CASE-B-INTAKE", "documents": ["CASE-B-INTAKE"]},
+                    ]}),
+                ),
+            )
+        by_id = {revision.case_id: revision for revision in result["revisions"]}
+        self.assertEqual(set(by_id), {"CASE-A", "CASE-B"})
+        self.assertEqual(result["refused"], [])
+        hostile_payload = by_id["CASE-A"].payload
+        self.assertIn("SYNTHETIC-PRIVATE-CASE-A", hostile_payload["raw_intake"])
+        self.assertIsNone(hostile_payload["driver_name"])
+        self.assertFalse(hostile_payload["driver_name_supplied"])
+        self.assertEqual(hostile_payload["loss_type"], "collision")
+        self.assertEqual(by_id["CASE-B"].payload["driver_name"], "Alex Rowan")
+        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"private_token", self.stores.trace.path.read_bytes())
 
     def test_missing_document_writes_no_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -168,14 +268,13 @@ class MockApiTests(unittest.TestCase):
             self.assertEqual(by_id["AUTO-D02"]["injury_reported"], True)
             self.assertEqual(by_id["AUTO-D03"]["loss_type"], "theft")
             self.assertEqual(by_id["AUTO-D11"]["referral_indicator"], "repair_amount_conflict")
-            self.assertEqual(sum(1 for payload in by_id.values() if payload["duplicates"] == 1), 2)
+            self.assertTrue(all("duplicates" not in payload for payload in by_id.values()))
             self.assertIn("8400 XCR", by_id["AUTO-D11"]["estimate_notes"])
         finally:
             process.terminate()
             process.wait(timeout=5)
             if process.stdout is not None:
                 process.stdout.close()
-            stores.close()
             state.cleanup()
 
 

@@ -1,6 +1,7 @@
 """Command line for the intake server."""
 
 import argparse
+import sys
 
 from fnol_foundation.stores import Stores, state_dir
 
@@ -23,8 +24,10 @@ def main(argv=None):
     except IntakeError as exc:
         print(f"{exc.error_code}: {exc}")
         return 1
-    finally:
-        stores.close()
     for revision in result["revisions"]:
         print(f"{revision.case_id} revision {revision.revision}")
+    refused = result["refused"]
+    if refused:
+        print("restricted_value: " + ", ".join(refused), file=sys.stderr)
+        return 1
     return 0

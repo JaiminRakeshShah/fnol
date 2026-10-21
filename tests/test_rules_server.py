@@ -38,11 +38,12 @@ class RulesServerTests(unittest.TestCase):
         tools = listed["result"]["tools"]
         self.assertEqual([t["name"] for t in tools], ["start_routing"])
         self.assertIn("case_id", tools[0]["inputSchema"]["properties"])
+        self.assertNotIn("selected_policy_version", tools[0]["inputSchema"]["properties"])
 
     def test_pipeline_routes_from_intake_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
             stores = Stores(tmp)
-            stores.input.append_revision(
+            revision = stores.input.append_revision(
                 "AUTO-D01",
                 {
                     "loss_type": "collision",
@@ -58,13 +59,26 @@ class RulesServerTests(unittest.TestCase):
                     "loss_reference": "auto-loss-D01",
                 },
                 document_set_sha256="abc",
+                trace_id="trace-d01",
             )
-            stores.close()
+            stores.input.put_decision(
+                "AUTO-D01",
+                revision.revision,
+                "policy",
+                {
+                    "selected_policy_version": "2",
+                    "policy_available": True,
+                    "reason": "matched",
+                    "wording_source": "AUTO-WORDING-V2",
+                    "endorsements": [],
+                    "source_id": "AUTO-D01-POLICY",
+                },
+                policy_sha256="policy-sha",
+            )
             summary = start_routing(
                 case_id="AUTO-D01",
                 mock_url="http://mock",
                 state_dir_path=tmp,
-                selected_policy_version="2",
                 fetch=_claims_ok,
             )
             self.assertEqual(summary["case_count"], 1)
@@ -72,7 +86,7 @@ class RulesServerTests(unittest.TestCase):
             self.assertEqual(row["route"], "standard")
             self.assertEqual(row["route_rule"], "AUTO-TRIAGE-01")
             self.assertFalse(row["duplicate_delivery"])
-            stored = Stores(tmp).input.get_tool_payload("AUTO-D01", "claims")
+            stored = Stores(tmp).input.get_tool_payload("AUTO-D01", "claims", 1)
             self.assertIsNotNone(stored)
 
     def test_stdio_calls_pipeline(self):
@@ -94,10 +108,7 @@ class RulesServerTests(unittest.TestCase):
                         "method": "tools/call",
                         "params": {
                             "name": "start_routing",
-                            "arguments": {
-                                "case_id": "AUTO-D01",
-                                "selected_policy_version": "2",
-                            },
+                            "arguments": {"case_id": "AUTO-D01"},
                         },
                     }),
                 ]) + "\n"
