@@ -1,1 +1,1 @@
-"""Thin MCP shells. Domain pipelines live under src/ (fnol_intake, fnol_rules)."""
+"""Thin MCP shells. Domain pipelines live under src/ (fnol_intake, fnol_policy, fnol_rules)."""

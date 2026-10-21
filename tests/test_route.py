@@ -127,6 +127,20 @@ def test_existing_claims_sets_duplicate():
     assert r.duplicate_delivery is True
 
 
+def test_unknown_injury_and_drivable_stay_unknown():
+    r = route(_fields(injury_reported=None, vehicle_drivable=None), _policy(), _claims())
+    assert r.route == "standard"
+    assert r.injury_reported is None
+    assert r.vehicle_drivable is None
+
+
+def test_repeated_label_is_manual_review():
+    r = route(_fields(repeated_fields=("driver_name",)), _policy(), _claims())
+    assert r.route == "manual_review"
+    assert r.conflicts == ["driver_name"]
+    assert "conflicting_facts" in r.reasons
+
+
 def test_manual_review_preserves_injury_flags():
     r = route(
         _fields(injury_reported=True, driver_name="not supplied"),

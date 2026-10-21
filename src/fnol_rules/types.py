@@ -33,9 +33,10 @@ class StructuredFields:
     incident_timestamp: str | None
     driver_name: str | None
     incident_location: str | None
-    injury_reported: bool
-    vehicle_drivable: bool
+    injury_reported: bool | None
+    vehicle_drivable: bool | None
     referral_indicator: str | None = None
+    repeated_fields: tuple[str, ...] = ()
     intake: SourceFacts | None = None
     report: SourceFacts | None = None
     estimate: SourceFacts | None = None
@@ -47,6 +48,11 @@ class PolicyResult:
 
     selected_policy_version: str | None
     policy_available: bool = True
+    payload_sha256: str | None = None
+    reason: str | None = None
+    wording_source: str | None = None
+    endorsements: tuple[str, ...] = ()
+    source_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -67,7 +73,9 @@ class RouteResult:
     route_rule: str
     missing_information: list[str]
     duplicate_delivery: bool
-    injury_reported: bool
-    vehicle_drivable: bool
+    injury_reported: bool | None
+    vehicle_drivable: bool | None
     selected_policy_version: str | None
     claims_available: bool
+    reasons: list[str]
+    conflicts: list[str]

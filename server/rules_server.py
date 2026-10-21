@@ -11,6 +11,7 @@ if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
 from fnol_rules.pipeline import start_routing
+from server.rpc import json_error, serve as serve_rpc, tool_text
 
 PROTOCOL = "2024-11-05"
 SERVER_INFO = {"name": "fnol-rules", "version": "1.0.0"}
@@ -18,25 +19,16 @@ SERVER_INFO = {"name": "fnol-rules", "version": "1.0.0"}
 START_ROUTING = {
     "name": "start_routing",
     "description": (
-        "Fetch claims (≤3 attempts), store canonical claims JSON in input.sqlite, "
-        "and route cases with AUTO-TRIAGE-01. Requires intake revisions. "
-        "Pass selected_policy_version from Step 2."
+        "Fetch claims (at most three attempts, retry only HTTP 503), store the "
+        "canonical claims JSON, and route with AUTO-TRIAGE-01. Requires an intake "
+        "revision and the policy decision for that same revision."
     ),
     "inputSchema": {
         "type": "object",
         "properties": {
             "case_id": {
                 "type": "string",
-                "description": "Optional. Omit to route all cases with a latest input revision.",
-            },
-            "selected_policy_version": {
-                "type": ["string", "null"],
-                "description": "Policy version from Step 2. null forces manual_review.",
-            },
-            "policy_available": {
-                "type": "boolean",
-                "description": "False when policy service was unavailable (Step 2).",
-                "default": True,
+                "description": "Optional. Omit to route every case that has a latest input revision.",
             },
         },
     },
@@ -45,7 +37,7 @@ START_ROUTING = {
 
 def handle(message):
     if not isinstance(message, dict) or "method" not in message:
-        return _error(message.get("id") if isinstance(message, dict) else None, -32600, "invalid request")
+        return json_error(message.get("id") if isinstance(message, dict) else None, -32600, "invalid request")
     method = message["method"]
     if "id" not in message:
         return None
@@ -66,58 +58,24 @@ def handle(message):
         return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": [START_ROUTING]}}
     if method == "tools/call":
         return _call_tool(msg_id, message.get("params") or {})
-    return _error(msg_id, -32601, "method not found")
+    return json_error(msg_id, -32601, "method not found")
 
 
 def _call_tool(msg_id, params):
     if params.get("name") != "start_routing":
-        return _error(msg_id, -32602, "unknown tool")
+        return json_error(msg_id, -32602, "unknown tool")
     args = params.get("arguments") or {}
     if not isinstance(args, dict):
-        return _error(msg_id, -32602, "arguments must be an object")
+        return json_error(msg_id, -32602, "arguments must be an object")
     try:
-        summary = start_routing(
-            case_id=args.get("case_id"),
-            selected_policy_version=args.get("selected_policy_version"),
-            policy_available=bool(args["policy_available"]) if "policy_available" in args else True,
-        )
+        summary = start_routing(case_id=args.get("case_id"))
     except Exception as exc:
-        return {
-            "jsonrpc": "2.0",
-            "id": msg_id,
-            "result": {
-                "content": [{"type": "text", "text": f"{exc.__class__.__name__}: {exc}"}],
-                "isError": True,
-            },
-        }
-    return {
-        "jsonrpc": "2.0",
-        "id": msg_id,
-        "result": {"content": [{"type": "text", "text": json.dumps(summary)}], "isError": False},
-    }
-
-
-def _error(msg_id, code, message):
-    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": code, "message": message}}
+        return tool_text(msg_id, f"{exc.__class__.__name__}: {exc}", is_error=True)
+    return tool_text(msg_id, json.dumps(summary))
 
 
 def serve(stdin=None, stdout=None):
-    """Read one JSON-RPC message per line and write one response per line."""
-    incoming = sys.stdin if stdin is None else stdin
-    outgoing = sys.stdout if stdout is None else stdout
-    for line in incoming:
-        if not line.strip():
-            continue
-        try:
-            message = json.loads(line)
-        except json.JSONDecodeError:
-            response = _error(None, -32700, "parse error")
-        else:
-            response = handle(message)
-        if response is None:
-            continue
-        outgoing.write(json.dumps(response, ensure_ascii=False) + "\n")
-        outgoing.flush()
+    serve_rpc(handle, stdin=stdin, stdout=stdout)
 
 
 if __name__ == "__main__":

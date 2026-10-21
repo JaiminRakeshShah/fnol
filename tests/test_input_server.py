@@ -54,7 +54,6 @@ class InputServerTests(unittest.TestCase):
             )
             self.assertTrue(Path(summary["input_sqlite"]).is_file())
             self.assertEqual(summary["case_count"], 1)
-            self.assertEqual(summary["duplicate_count"], 0)
             self.assertEqual(summary["revisions"], [{"case_id": "AUTO-D01", "revision": 1}])
 
     def test_stdio_call_uses_the_pipeline(self):

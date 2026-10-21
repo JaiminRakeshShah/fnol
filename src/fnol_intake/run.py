@@ -8,6 +8,7 @@ import urllib.request
 from datetime import datetime, timezone
 
 from fnol_foundation.canonical import digest
+from fnol_foundation.events import record_event
 
 from fnol_intake.parse import (
     document_kind,
@@ -56,8 +57,10 @@ def _now():
     return datetime.now(timezone.utc)
 
 
-def _span():
-    return uuid.uuid4().hex
+def _timed(fetch, url):
+    started = time.perf_counter()
+    status, body = fetch(url)
+    return status, body, int((time.perf_counter() - started) * 1000)
 
 
 def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
@@ -69,41 +72,48 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
     """
     fetch = transport or default_transport
     trace_id = uuid.uuid4().hex
-    health_status, health = fetch(_url(mock_url, "/health"))
-    stores.trace.append_event(
+    health_status, health, health_ms = _timed(fetch, _url(mock_url, "/health"))
+    health_ok = health_status == 200 and isinstance(health, dict) and health.get("status") == "ok"
+    record_event(
+        stores,
         trace_id=trace_id,
-        span_id=_span(),
         step="1",
+        event="health",
         actor="intake",
-        status="ok" if health_status == 200 and health.get("status") == "ok" else "error",
-        error_code=None if health_status == 200 and health.get("status") == "ok" else "health_failed",
+        status="ok" if health_ok else "error",
+        error_code=None if health_ok else "health_failed",
         mock_http_status=health_status,
+        duration_ms=health_ms,
         started_at=_now(),
         attempt=1,
     )
-    if health_status != 200 or health.get("status") != "ok":
+    if not health_ok:
         raise IntakeError("health_failed", "mock health check failed")
 
-    cases_status, cases_body = fetch(_url(mock_url, "/v1/cases"))
-    stores.trace.append_event(
+    cases_status, cases_body, cases_ms = _timed(fetch, _url(mock_url, "/v1/cases"))
+    cases_ok = cases_status == 200 and isinstance(cases_body, dict) and isinstance(cases_body.get("cases"), list)
+    record_event(
+        stores,
         trace_id=trace_id,
-        span_id=_span(),
         step="1",
+        event="cases",
         actor="intake",
-        status="ok" if cases_status == 200 else "error",
-        error_code=None if cases_status == 200 else "cases_unavailable",
+        status="ok" if cases_ok else "error",
+        error_code=None if cases_ok else "cases_unavailable",
         mock_http_status=cases_status,
+        duration_ms=cases_ms,
         started_at=_now(),
         attempt=1,
     )
-    if cases_status != 200 or not isinstance(cases_body.get("cases"), list):
+    if not cases_ok:
         raise IntakeError("cases_unavailable", "case list was not available")
 
     procedures = load_procedures(policies_dir)
-    stores.trace.append_event(
+    record_event(
+        stores,
         trace_id=trace_id,
-        span_id=_span(),
         step="1",
+        event="procedures",
         actor="intake",
         status="ok",
         output_sha256=digest([{"sha256": item["sha256"], "source_id": item["source_id"]} for item in procedures]),
@@ -115,10 +125,11 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
     loaded, missing = _read_cases(cases, documents_dir)
     if missing:
         for item in missing:
-            stores.trace.append_event(
+            record_event(
+                stores,
                 trace_id=trace_id,
-                span_id=_span(),
                 step="1",
+                event="document_missing",
                 actor="intake",
                 status="error",
                 case_id=item["case_id"],
@@ -130,8 +141,6 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
 
     stores.input.store_procedures(procedures)
     payloads = [_payload(item) for item in loaded]
-    from fnol_intake.pipeline import apply_duplicate_flags
-    apply_duplicate_flags(payloads, stores.input.latest_loss_keys())
     revisions = []
     for payload in payloads:
         started = time.perf_counter()
@@ -139,11 +148,13 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
             payload["case_id"],
             payload,
             document_set_sha256=payload["document_set_sha256"],
-        )
-        stores.trace.append_event(
             trace_id=trace_id,
-            span_id=_span(),
+        )
+        record_event(
+            stores,
+            trace_id=trace_id,
             step="1",
+            event="revision",
             actor="intake",
             status="ok",
             case_id=payload["case_id"],
@@ -206,6 +217,7 @@ def _notes(lines):
 
 def _payload(item):
     parsed_docs = []
+    repeated = []
     intake_parsed = None
     intake_doc = None
     estimate = None
@@ -213,6 +225,9 @@ def _payload(item):
     for document in item["documents"]:
         kind = document_kind(document["source_id"], item["intake_source"])
         parsed = parse_document(document["raw_text"], labels_for(kind))
+        for name in parsed["duplicate_fields"]:
+            if name not in repeated:
+                repeated.append(name)
         entry = {
             "source_id": document["source_id"],
             "kind": kind,
@@ -276,4 +291,5 @@ def _payload(item):
         "reported_loss_type": report_fields.get("reported_loss_type"),
         "report_notes": None if report is None else _notes(report["unlabeled_lines"]),
         "raw_report": None if report is None else report["raw_text"],
+        "repeated_fields": repeated,
     }

@@ -23,8 +23,6 @@ def main(argv=None):
     except IntakeError as exc:
         print(f"{exc.error_code}: {exc}")
         return 1
-    finally:
-        stores.close()
     for revision in result["revisions"]:
         print(f"{revision.case_id} revision {revision.revision}")
     return 0

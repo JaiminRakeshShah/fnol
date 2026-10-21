@@ -45,3 +45,26 @@ def assert_no_restricted(value):
     for text in _strings(value):
         if any(marker in text for marker in RESTRICTED_MARKERS):
             raise RestrictedValueError("restricted value refused")
+
+
+def drop_private_token(value):
+    """Return a deep copy with every private_token key removed.
+
+    Other keys and string values are unchanged. The removed value is not returned.
+    """
+    if isinstance(value, dict):
+        return {
+            key: drop_private_token(item)
+            for key, item in value.items()
+            if key != "private_token"
+        }
+    if isinstance(value, list):
+        return [drop_private_token(item) for item in value]
+    return value
+
+
+def redact_for_store(value):
+    """Drop private_token keys, then refuse if a restricted marker remains."""
+    cleaned = drop_private_token(value)
+    assert_no_restricted(cleaned)
+    return cleaned

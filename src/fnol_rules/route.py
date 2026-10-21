@@ -33,17 +33,19 @@ def _sources(fields: StructuredFields) -> list[SourceFacts]:
     return [s for s in (fields.intake, fields.report, fields.estimate) if s is not None]
 
 
-def _conflict(fields: StructuredFields) -> bool:
-    """True when present sources disagree on vehicle, timestamp, or loss type."""
+def _conflict_names(fields: StructuredFields) -> list[str]:
+    """Fields that disagree across sources, plus labels repeated inside one document."""
+    names: list[str] = []
     srcs = _sources(fields)
-    if len(srcs) < 2:
-        return False
-
-    def disagree(attr: str) -> bool:
-        vals = [getattr(s, attr) for s in srcs if getattr(s, attr) is not None]
-        return len(set(vals)) > 1
-
-    return disagree("vehicle_id") or disagree("incident_timestamp") or disagree("loss_type")
+    if len(srcs) >= 2:
+        for attr in ("vehicle_id", "incident_timestamp", "loss_type"):
+            vals = [getattr(source, attr) for source in srcs if getattr(source, attr) is not None]
+            if len(set(vals)) > 1:
+                names.append(attr)
+    for name in fields.repeated_fields:
+        if name not in names:
+            names.append(name)
+    return names
 
 
 def route(
@@ -56,26 +58,39 @@ def route(
         fields.loss_type if fields.loss_type in SUPPORTED_LOSSES else "unsupported"
     )
     missing = _missing_information(fields)
+    conflicts = _conflict_names(fields)
     duplicate = (
         claims.available
         and (claims.intake_deliveries > 1 or len(claims.existing_claims) > 0)
     )
+    reasons: list[str] = []
+    if classification == "unsupported":
+        reasons.append("unsupported_loss")
+    if missing:
+        reasons.append("missing_information")
+    if conflicts:
+        reasons.append("conflicting_facts")
+    if not claims.available:
+        reasons.append("claims_unavailable")
+    if not policy.policy_available:
+        reasons.append("policy_unavailable")
+    elif policy.selected_policy_version is None:
+        reasons.append("policy_version_null")
 
-    manual = (
-        classification == "unsupported"
-        or bool(missing)
-        or _conflict(fields)
-        or not claims.available
-        or not policy.policy_available
-        or policy.selected_policy_version is None
-    )
-
-    if manual:
+    if reasons:
         chosen = "manual_review"
-    elif fields.injury_reported or not fields.vehicle_drivable:
+    elif fields.injury_reported is True or fields.vehicle_drivable is False:
         chosen = "urgent"
+        if fields.injury_reported is True:
+            reasons.append("injury")
+        if fields.vehicle_drivable is False:
+            reasons.append("not_drivable")
     elif classification == "theft" or fields.referral_indicator == "repair_amount_conflict":
         chosen = "specialist"
+        if classification == "theft":
+            reasons.append("theft")
+        if fields.referral_indicator == "repair_amount_conflict":
+            reasons.append("repair_amount_conflict")
     else:
         chosen = "standard"
 
@@ -89,4 +104,6 @@ def route(
         vehicle_drivable=fields.vehicle_drivable,
         selected_policy_version=policy.selected_policy_version,
         claims_available=claims.available,
+        reasons=reasons,
+        conflicts=conflicts,
     )

@@ -11,6 +11,8 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
 from fnol_foundation import RestrictedValueError, Stores, TRACE_COLUMNS, canonical, digest
+from fnol_foundation.canonical import redact_for_store
+from fnol_foundation.stores import ImmutableRecordError
 from tools.runtime import canonical as mock_canonical
 from tools.runtime import digest as mock_digest
 
@@ -29,7 +31,6 @@ class StoreTests(unittest.TestCase):
         self.stores = Stores(self.tmp.name)
 
     def tearDown(self):
-        self.stores.close()
         self.tmp.cleanup()
 
     def test_creates_the_three_sqlite_files(self):
@@ -120,6 +121,26 @@ class StoreTests(unittest.TestCase):
                 actor="shadow",
                 status="ok",
                 shadow_narrative="token SYNTHETIC-PRIVATE-AUTO-D01",
+            )
+
+    def test_redact_drops_the_token_key_and_refuses_a_leftover_marker(self):
+        cleaned = redact_for_store({"private_token": "SYNTHETIC-PRIVATE-AUTO-D01", "version": "2"})
+        self.assertEqual(cleaned, {"version": "2"})
+        with self.assertRaises(RestrictedValueError):
+            redact_for_store({"note": "SYNTHETIC-PRIVATE-AUTO-D01"})
+
+    def test_tool_payload_is_redacted_and_bound_to_the_revision(self):
+        revision = self.stores.input.append_revision("AUTO-D01", {"loss_type": "collision"}, "sha-a")
+        raw = {"private_token": "SYNTHETIC-PRIVATE-AUTO-D01", "source_id": "AUTO-D01-POLICY", "version": "2"}
+        first = self.stores.input.put_tool_payload("AUTO-D01", "policy", raw, revision.revision)
+        second = self.stores.input.put_tool_payload("AUTO-D01", "policy", raw, revision.revision)
+        self.assertEqual(first, second)
+        stored = self.stores.input.get_tool_payload("AUTO-D01", "policy", revision.revision)
+        self.assertNotIn("private_token", stored["raw_json"])
+        self.assertEqual(stored["sha256"], digest({"source_id": "AUTO-D01-POLICY", "version": "2"}))
+        with self.assertRaises(ImmutableRecordError):
+            self.stores.input.put_tool_payload(
+                "AUTO-D01", "policy", {"source_id": "OTHER", "version": "1"}, revision.revision
             )
 
 
