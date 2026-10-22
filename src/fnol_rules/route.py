@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fnol_rules.types import (
+    INJECTION_CLEAN,
     MISSING_SENTINEL,
     RULE_VERSION,
     SUPPORTED_LOSSES,
@@ -64,6 +65,11 @@ def route(
         and (claims.intake_deliveries > 1 or len(claims.existing_claims) > 0)
     )
     reasons: list[str] = []
+    if (
+        fields.injection_field_status != INJECTION_CLEAN
+        or fields.injection_model_status != INJECTION_CLEAN
+    ):
+        reasons.append("dangerous_content")
     if classification == "unsupported":
         reasons.append("unsupported_loss")
     if missing:
@@ -108,4 +114,7 @@ def route(
         claims_available=claims.available,
         reasons=reasons,
         conflicts=conflicts,
+        injection_field_status=fields.injection_field_status,
+        injection_model_status=fields.injection_model_status,
+        extra_fields=[dict(item) for item in fields.extra_fields],
     )

@@ -8,6 +8,7 @@ value the mock binds approval to.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fnol_foundation.canonical import assert_no_restricted
@@ -43,7 +44,12 @@ REASON_TEXT = {
     "not_drivable": "the vehicle is reported as not drivable",
     "theft": "the loss is a theft",
     "repair_amount_conflict": "a repair-amount discrepancy was supplied as a referral indicator",
+    "dangerous_content": "supplied document text may contain instructions to the system",
 }
+
+# The label is supplied text: keep it short and plain so it reads as a name, not a statement.
+_LABEL_UNSAFE = re.compile(r"[^A-Za-z0-9 _-]+")
+_LABEL_LIMIT = 40
 
 POLICY_REASON_TEXT = {
     "zero": "no policy interval contains the incident timestamp",
@@ -134,6 +140,41 @@ def build_draft(
     return draft
 
 
+def _safe_label(label: Any) -> str:
+    text = _LABEL_UNSAFE.sub(" ", str(label or "")).strip()
+    text = " ".join(text.split())[:_LABEL_LIMIT].strip()
+    return text or "unnamed"
+
+
+def _content_check_notes(route: dict[str, Any]) -> list[str]:
+    """Name each extra field by source id and label. The supplied line is never repeated."""
+    if "dangerous_content" not in (route.get("reasons") or []):
+        return []
+    notes = []
+    for item in route.get("extra_fields") or []:
+        if not isinstance(item, dict):
+            continue
+        notes.append(
+            f"Content check: {item.get('source_id') or 'a supplied document'} has an unexpected "
+            f"field labelled \"{_safe_label(item.get('label'))}\". Its text was treated as "
+            "untrusted data and was not followed."
+        )
+    model = route.get("injection_model_status")
+    if model == "injection":
+        notes.append(
+            "Content check: the model screen flagged leftover document text as instructions. "
+            "That text was not followed."
+        )
+    elif model != "clean":
+        notes.append(
+            "Content check: the model screen of leftover document text did not complete, "
+            "so the text was not cleared. It was not followed."
+        )
+    if not notes:
+        notes.append("Content check: supplied document text was not cleared and was not followed.")
+    return notes
+
+
 def _narrative(case_id, input_revision, facts, policy, route, citations) -> str:
     reasons = [item for item in route.get("reasons", []) if isinstance(item, str)]
     conflicts = [item for item in route.get("conflicts", []) if isinstance(item, str)]
@@ -159,6 +200,7 @@ def _narrative(case_id, input_revision, facts, policy, route, citations) -> str:
         lines.append(
             "Urgency: injury or non-drivable vehicle is flagged for the handler regardless of route."
         )
+    lines.extend(_content_check_notes(route))
     if missing:
         lines.append("Missing information: " + ", ".join(missing) + ". See follow-up questions.")
     if conflicts:

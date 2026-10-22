@@ -9,14 +9,23 @@ from fnol_intake.run import run_intake
 ROOT = Path(__file__).resolve().parents[2]
 
 
-def start_ingestion(mock_url=None, documents_dir=None, policies_dir=None, state_dir_path=None, transport=None):
+def start_ingestion(
+    mock_url=None,
+    documents_dir=None,
+    policies_dir=None,
+    state_dir_path=None,
+    transport=None,
+    injection_client=None,
+):
     """Read the mock case list and write input.sqlite. Returns the file path and case rows."""
     mock_url = mock_url or os.environ.get("FNOL_MOCK_URL", "http://127.0.0.1:8767")
     documents = Path(documents_dir or os.environ.get("FNOL_DOCUMENTS_DIR", ROOT / "data" / "dev" / "documents"))
     policies = Path(policies_dir or os.environ.get("FNOL_POLICIES_DIR", ROOT / "data" / "dev" / "policies"))
     directory = Path(state_dir_path) if state_dir_path is not None else state_dir()
     stores = Stores(directory)
-    result = run_intake(stores, mock_url, documents, policies, transport=transport)
+    result = run_intake(
+        stores, mock_url, documents, policies, transport=transport, injection_client=injection_client
+    )
     return {
         "input_sqlite": str(stores.input.path.resolve()),
         "case_count": len(result["revisions"]),

@@ -23,10 +23,18 @@ CREATE TABLE trace.trace_events (
   output_tokens INT NULL,
   shadow_narrative NVARCHAR(MAX) NULL,
   shadow_safety_status NVARCHAR(32) NULL,
+  injection_field_status NVARCHAR(32) NULL,
+  injection_model_status NVARCHAR(32) NULL,
   event NVARCHAR(64) NULL,
   prev_hash NVARCHAR(64) NULL,
   event_hash NVARCHAR(64) NULL
 );
+GO
+
+IF COL_LENGTH(N'trace.trace_events', N'injection_field_status') IS NULL
+ALTER TABLE trace.trace_events ADD injection_field_status NVARCHAR(32) NULL;
+IF COL_LENGTH(N'trace.trace_events', N'injection_model_status') IS NULL
+ALTER TABLE trace.trace_events ADD injection_model_status NVARCHAR(32) NULL;
 GO
 
 IF OBJECT_ID(N'trace.trg_trace_events_no_update', N'TR') IS NULL

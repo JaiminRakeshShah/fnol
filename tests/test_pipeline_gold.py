@@ -14,7 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
 
+from fake_model import FakeModel
 from fnol_foundation.stores import Stores
 from fnol_intake.pipeline import start_ingestion
 from fnol_policy.pipeline import start_policy
@@ -23,6 +25,8 @@ from fnol_rules.pipeline import start_routing
 DEV_DOCUMENTS = ROOT / "data" / "dev" / "documents"
 DEV_POLICIES = ROOT / "data" / "dev" / "policies"
 GOLD = json.loads((ROOT / "feedback" / "dev_gold.json").read_text())
+# dev_gold.json still says standard for AUTO-D08; its extra SYSTEM field now forces manual_review.
+ROUTE_OVERRIDES = {"AUTO-D08": "manual_review"}
 
 
 class PipelineGoldTests(unittest.TestCase):
@@ -55,6 +59,7 @@ class PipelineGoldTests(unittest.TestCase):
                 documents_dir=DEV_DOCUMENTS,
                 policies_dir=DEV_POLICIES,
                 state_dir_path=fnol_state.name,
+                injection_client=FakeModel("clean"),
             )
             policies = start_policy(mock_url=url, state_dir_path=fnol_state.name)
             routes = start_routing(mock_url=url, state_dir_path=fnol_state.name)
@@ -65,7 +70,11 @@ class PipelineGoldTests(unittest.TestCase):
             for case_id, gold in GOLD.items():
                 route = by_route[case_id]
                 policy = by_policy[case_id]
-                self.assertEqual(route["route"], gold["routing"][0], case_id)
+                expected = ROUTE_OVERRIDES.get(case_id, gold["routing"][0])
+                self.assertEqual(route["route"], expected, case_id)
+                self.assertEqual(
+                    "dangerous_content" in route["reasons"], case_id == "AUTO-D08", case_id
+                )
                 self.assertEqual(route["classification"], gold["classification"][0], case_id)
                 self.assertEqual(
                     route["selected_policy_version"],

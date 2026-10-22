@@ -19,6 +19,8 @@ def _fields() -> StructuredFields:
         incident_location="Cedar",
         injury_reported=False,
         vehicle_drivable=True,
+        injection_field_status="clean",
+        injection_model_status="clean",
     )
 
 

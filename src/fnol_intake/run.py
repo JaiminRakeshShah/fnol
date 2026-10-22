@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from fnol_foundation.canonical import EVIDENCE_TEXT_COLUMNS, RESTRICTED_MARKERS, RestrictedValueError, digest
 from fnol_foundation.events import record_event
 
+from fnol_intake import injection
 from fnol_intake.parse import (
     document_kind,
     file_sha256,
@@ -63,7 +64,7 @@ def _timed(fetch, url):
     return status, body, int((time.perf_counter() - started) * 1000)
 
 
-def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
+def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None, injection_client=None):
     """Load procedure sources once, then write one revision per case id.
 
     Case ids and document source ids come from GET /v1/cases. A listed source
@@ -71,6 +72,10 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
     revision for that case. A restricted marker in a structured field is dropped.
     The raw file is still stored. One refused case does not drop the others.
     Calling this again inserts the next revision.
+
+    Each revision carries the extra-field list and both prompt-injection verdicts.
+    ``injection_client`` has ``chat(system, user)``; when None the Foundry client
+    is used if FNOL_MODEL_PROVIDER=azure, and a missing client is not clean.
     """
     fetch = transport or default_transport
     trace_id = uuid.uuid4().hex
@@ -142,10 +147,16 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
         raise DocumentMissing(missing)
 
     stores.input.store_procedures(procedures)
-    payloads = [_scrub_structured(_payload(item)) for item in loaded]
+    client = injection_client if injection_client is not None else injection.default_client()
     revisions = []
     refused = []
-    for payload in payloads:
+    for item in loaded:
+        payload, leftover = _payload(item)
+        payload = _scrub_structured(payload)
+        check_started = time.perf_counter()
+        verdict = injection.model_check(client, payload["extra_fields"], leftover)
+        check_ms = int((time.perf_counter() - check_started) * 1000)
+        payload["injection_model_status"] = verdict.status
         started = time.perf_counter()
         try:
             revision = stores.input.append_revision(
@@ -183,6 +194,7 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
             started_at=_now(),
             attempt=1,
         )
+        _record_injection_check(stores, trace_id, revision, verdict, check_ms)
         revisions.append(revision)
     return {
         "trace_id": trace_id,
@@ -190,6 +202,34 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
         "refused": refused,
         "procedure_sources": procedures,
     }
+
+
+def _record_injection_check(stores, trace_id, revision, verdict, duration_ms):
+    """Both verdicts on the trace. Labels and line text are never copied here."""
+    field_status = revision.payload["injection_field_status"]
+    clean = field_status == injection.CLEAN and verdict.status == injection.CLEAN
+    error_code = verdict.error_code
+    if error_code is None and field_status != injection.CLEAN:
+        error_code = "extra_field"
+    record_event(
+        stores,
+        trace_id=trace_id,
+        step="1",
+        event="injection_check",
+        actor="intake",
+        status="ok" if clean else "error",
+        error_code=None if clean else error_code,
+        case_id=revision.case_id,
+        input_revision=revision.revision,
+        model_id=verdict.model_id,
+        input_tokens=verdict.input_tokens,
+        output_tokens=verdict.output_tokens,
+        injection_field_status=field_status,
+        injection_model_status=verdict.status,
+        duration_ms=duration_ms,
+        started_at=_now(),
+        attempt=1,
+    )
 
 
 def _unique_cases(cases):
@@ -266,18 +306,30 @@ def _scrub_structured(payload):
 
 
 def _payload(item):
+    """Return (revision payload, leftover lines for the model check).
+
+    Leftover lines are kept out of the payload; only extra-field labels are stored.
+    """
     parsed_docs = []
     repeated = []
+    extra = []
+    leftover = []
     intake_parsed = None
     intake_doc = None
     estimate = None
     report = None
     for document in item["documents"]:
         kind = document_kind(document["source_id"], item["intake_source"])
-        parsed = parse_document(document["raw_text"], labels_for(kind))
+        labels = labels_for(kind)
+        parsed = parse_document(document["raw_text"], labels)
         for name in parsed["duplicate_fields"]:
             if name not in repeated:
                 repeated.append(name)
+        if kind in ("intake", "estimate", "report"):
+            for label in injection.extra_fields(document["raw_text"], labels):
+                extra.append({"source_id": document["source_id"], "label": label})
+            for line in parsed["unlabeled_lines"]:
+                leftover.append({"source_id": document["source_id"], "line": line})
         entry = {
             "source_id": document["source_id"],
             "kind": kind,
@@ -304,7 +356,7 @@ def _payload(item):
     estimate_fields = {} if estimate is None else estimate["fields"]
     report_fields = {} if report is None else report["fields"]
     document_set = [{"sha256": doc["sha256"], "source_id": doc["source_id"]} for doc in parsed_docs]
-    return {
+    payload = {
         "case_id": item["case_id"],
         "document_set_sha256": digest(document_set),
         "intake_source": item["intake_source"],
@@ -342,4 +394,7 @@ def _payload(item):
         "report_notes": None if report is None else _notes(report["unlabeled_lines"]),
         "raw_report": None if report is None else report["raw_text"],
         "repeated_fields": repeated,
+        "extra_fields": extra,
+        "injection_field_status": injection.field_status(extra),
     }
+    return payload, leftover

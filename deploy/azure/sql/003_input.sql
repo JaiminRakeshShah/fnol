@@ -40,8 +40,19 @@ CREATE TABLE input.input_revisions (
   report_notes NVARCHAR(MAX) NULL,
   raw_report NVARCHAR(MAX) NULL,
   repeated_fields NVARCHAR(MAX) NULL,
+  extra_fields NVARCHAR(MAX) NULL,
+  injection_field_status NVARCHAR(32) NULL,
+  injection_model_status NVARCHAR(32) NULL,
   CONSTRAINT PK_input_revisions PRIMARY KEY (case_id, revision)
 );
+GO
+
+IF COL_LENGTH(N'input.input_revisions', N'extra_fields') IS NULL
+ALTER TABLE input.input_revisions ADD extra_fields NVARCHAR(MAX) NULL;
+IF COL_LENGTH(N'input.input_revisions', N'injection_field_status') IS NULL
+ALTER TABLE input.input_revisions ADD injection_field_status NVARCHAR(32) NULL;
+IF COL_LENGTH(N'input.input_revisions', N'injection_model_status') IS NULL
+ALTER TABLE input.input_revisions ADD injection_model_status NVARCHAR(32) NULL;
 GO
 
 IF OBJECT_ID(N'input.trg_input_revisions_no_update', N'TR') IS NULL

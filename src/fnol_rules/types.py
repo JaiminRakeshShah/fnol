@@ -8,6 +8,7 @@ from typing import Any
 SUPPORTED_LOSSES = frozenset({"collision", "theft", "glass"})
 MISSING_SENTINEL = "not supplied"
 RULE_VERSION = "AUTO-TRIAGE-01"
+INJECTION_CLEAN = "clean"
 
 
 @dataclass(frozen=True)
@@ -40,6 +41,10 @@ class StructuredFields:
     intake: SourceFacts | None = None
     report: SourceFacts | None = None
     estimate: SourceFacts | None = None
+    # Only "clean" passes. None (never checked) routes manual_review like any other value.
+    injection_field_status: str | None = None
+    injection_model_status: str | None = None
+    extra_fields: tuple[dict[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,3 +84,6 @@ class RouteResult:
     claims_available: bool
     reasons: list[str]
     conflicts: list[str]
+    injection_field_status: str | None = None
+    injection_model_status: str | None = None
+    extra_fields: list[dict[str, str]] = field(default_factory=list)

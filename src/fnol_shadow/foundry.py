@@ -143,7 +143,7 @@ class FoundryClient:
         )
 
 
-def load_foundry_client() -> FoundryClient:
+def load_foundry_client(*, timeout: float = 60) -> FoundryClient:
     from fnol_shadow.content_safety import content_safety_check
 
     endpoint = os.environ.get("FNOL_FOUNDRY_ENDPOINT", "").strip()
@@ -156,6 +156,7 @@ def load_foundry_client() -> FoundryClient:
         deployment=deployment or DEFAULT_DEPLOYMENT,
         api_version=api_version or DEFAULT_API_VERSION,
         content_safety=content_safety_check,
+        timeout=timeout,
     )
 
 

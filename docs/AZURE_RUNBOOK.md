@@ -24,7 +24,7 @@ Blob containers are folders of files. Container Apps are running programs. They 
 | `FNOL_SQL_SERVER` | Use Azure SQL instead of SQLite |
 | `FNOL_STEP_TRANSPORT=http` | Analyst calls step HTTP URLs instead of stdio |
 | `FNOL_INTAKE_URL` / `FNOL_POLICY_URL` / `FNOL_RULES_URL` / `FNOL_CITATIONS_URL` | Step base URLs |
-| `FNOL_MODEL_PROVIDER=azure` | Use Foundry Gemma instead of Bedrock |
+| `FNOL_MODEL_PROVIDER=azure` | Use Foundry Gemma instead of Bedrock. Also required for the intake prompt-injection check; without it every case with leftover document lines routes `manual_review` |
 | `FNOL_FOUNDRY_ENDPOINT` | Foundry / Azure OpenAI style endpoint |
 | `FNOL_FOUNDRY_DEPLOYMENT` | Default `gemma-4-31b` |
 | `FNOL_CONTENT_SAFETY_ENDPOINT` | Optional Content Safety scan before `assess()` |

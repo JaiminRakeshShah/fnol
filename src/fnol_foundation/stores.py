@@ -45,6 +45,8 @@ TRACE_COLUMNS = (
     "output_tokens",
     "shadow_narrative",
     "shadow_safety_status",
+    "injection_field_status",
+    "injection_model_status",
     "event",
     "prev_hash",
     "event_hash",
@@ -89,7 +91,12 @@ INPUT_COLUMNS = (
     "report_notes",
     "raw_report",
     "repeated_fields",
+    "extra_fields",
+    "injection_field_status",
+    "injection_model_status",
 )
+
+JSON_LIST_COLUMNS = {"repeated_fields", "extra_fields"}
 
 BOOL_COLUMNS = {
     "driver_name_supplied",
@@ -140,6 +147,9 @@ CREATE TABLE IF NOT EXISTS input_revisions (
   report_notes TEXT,
   raw_report TEXT,
   repeated_fields TEXT,
+  extra_fields TEXT,
+  injection_field_status TEXT,
+  injection_model_status TEXT,
   UNIQUE (case_id, revision)
 );
 CREATE TABLE IF NOT EXISTS procedure_sources (
@@ -327,7 +337,7 @@ class DraftRecord:
 
 
 def _bind_value(column, value):
-    if column == "repeated_fields":
+    if column in JSON_LIST_COLUMNS:
         if not value:
             return None
         return canonical(list(value))
@@ -341,7 +351,7 @@ def _bind_value(column, value):
 def _read_value(column, value):
     if column in BOOL_COLUMNS and value is not None:
         return bool(value)
-    if column == "repeated_fields":
+    if column in JSON_LIST_COLUMNS:
         if not value:
             return []
         return json.loads(value)
@@ -384,6 +394,9 @@ class InputStore:
             db.executescript(INPUT_SCHEMA)
             _add_column(db, "input_revisions", "trace_id", "TEXT")
             _add_column(db, "input_revisions", "repeated_fields", "TEXT")
+            _add_column(db, "input_revisions", "extra_fields", "TEXT")
+            _add_column(db, "input_revisions", "injection_field_status", "TEXT")
+            _add_column(db, "input_revisions", "injection_model_status", "TEXT")
             names = _table_names(db, "tool_payloads")
             if names and "input_revision" not in names:
                 db.execute("DROP TABLE tool_payloads")
@@ -684,6 +697,8 @@ class TraceStore:
             _add_column(db, "trace_events", "event", "TEXT")
             _add_column(db, "trace_events", "prev_hash", "TEXT")
             _add_column(db, "trace_events", "event_hash", "TEXT")
+            _add_column(db, "trace_events", "injection_field_status", "TEXT")
+            _add_column(db, "trace_events", "injection_model_status", "TEXT")
 
     def append_event(self, **fields):
         """Insert one hash-chained trace event. Updates and deletes are rejected by triggers."""

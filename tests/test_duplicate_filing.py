@@ -18,7 +18,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
 
+from fake_model import FakeModel
 from fnol_analyst.client import AnalystClient
 from fnol_citations.pipeline import start_citations
 from fnol_intake.pipeline import start_ingestion
@@ -71,6 +73,7 @@ class DuplicateFilingTests(unittest.TestCase):
                 documents_dir=DEV_DOCUMENTS,
                 policies_dir=DEV_POLICIES,
                 state_dir_path=fnol_state.name,
+                injection_client=FakeModel("clean"),
             )
             start_policy(mock_url=url, state_dir_path=fnol_state.name)
             routes = start_routing(mock_url=url, state_dir_path=fnol_state.name)

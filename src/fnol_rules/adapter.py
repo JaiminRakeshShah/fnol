@@ -54,4 +54,11 @@ def fields_from_payload(payload: dict) -> StructuredFields:
         intake=intake,
         report=report,
         estimate=estimate,
+        injection_field_status=payload.get("injection_field_status"),
+        injection_model_status=payload.get("injection_model_status"),
+        extra_fields=tuple(
+            {"source_id": item.get("source_id"), "label": item.get("label")}
+            for item in payload.get("extra_fields") or ()
+            if isinstance(item, dict)
+        ),
     )
