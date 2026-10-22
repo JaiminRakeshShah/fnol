@@ -63,5 +63,14 @@ def serve(stdin=None, stdout=None):
     serve_rpc(handle, stdin=stdin, stdout=stdout)
 
 
+def serve_http():
+    from server.http_serve import serve_tools
+
+    serve_tools("intake", {"start_ingestion": start_ingestion})
+
+
 if __name__ == "__main__":
-    serve()
+    if len(sys.argv) > 1 and sys.argv[1] == "--http":
+        serve_http()
+    else:
+        serve()

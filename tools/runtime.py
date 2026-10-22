@@ -10,6 +10,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
 
 
 def canonical(value):
@@ -21,6 +23,18 @@ def digest(value):
 
 
 def connect(path):
+    """Open mock state. SQLite by default; Azure SQL when FNOL_SQL_SERVER is set."""
+    try:
+        from fnol_foundation import azure_sql
+    except ImportError:
+        azure_sql = None
+    if azure_sql is not None and azure_sql.sql_enabled():
+        # Caller uses ``with connect(...)`` in some paths and bare connect in others.
+        # Return an open Azure connection; schema DDL comes from deploy scripts.
+        import pyodbc
+
+        raw = pyodbc.connect(azure_sql.connection_string(), autocommit=False)
+        return azure_sql.AzureConnection(raw, "enterprise")
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=15)

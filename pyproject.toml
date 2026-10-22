@@ -7,6 +7,11 @@ dependencies = []
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
+azure = [
+    "azure-identity>=1.19.0",
+    "azure-storage-blob>=12.24.0",
+    "pyodbc>=5.2.0",
+]
 
 [tool.uv]
 package = false

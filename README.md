@@ -48,6 +48,13 @@ In another terminal, retrieve `GET /health` and `GET /v1/cases`. Read `data/dev/
 
 `data/dev/dataset.json` is the mock's backing fixture, not a substitute for calling tools. Directly reading it from the agent bypasses the integration exercise. The assessor will use new fixtures and observe requests. Fault controls must not be read by the solution.
 
+## Azure target (optional)
+
+The default path stays local SQLite and stdio. An Azure layout (Container Apps,
+Azure SQL, Blob, Foundry Gemma 4 31B) is documented in `docs/AZURE_RUNBOOK.md`
+with Bicep under `deploy/azure/`. Set the environment switches in that runbook
+only when deploying; CI and assessment do not require Azure.
+
 ## Evaluate development outputs
 
 Emit a JSON array following `docs/OUTPUT_CONTRACT.md`, then run:

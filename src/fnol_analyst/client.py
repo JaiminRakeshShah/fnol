@@ -348,6 +348,11 @@ class AnalystClient:
     def _mantle_client(self):
         if self._shadow_chat is not None:
             return _StubMantle(self._shadow_chat, self._shadow_model_id)
+        provider = os.environ.get("FNOL_MODEL_PROVIDER", "").strip().lower()
+        if provider == "azure":
+            from fnol_shadow.foundry import load_foundry_client
+
+            return load_foundry_client()
         settings = load_settings(self.state_dir)
         if not settings.api_key:
             raise ShadowError("api_key_missing", "AWS_BEARER_TOKEN_BEDROCK is required")
