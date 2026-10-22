@@ -1,0 +1,560 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.48.1.52935",
+      "templateHash": "17700316372513699125"
+    }
+  },
+  "parameters": {
+    "location": {
+      "type": "string",
+      "defaultValue": "[resourceGroup().location]",
+      "metadata": {
+        "description": "Azure region for all resources"
+      }
+    },
+    "namePrefix": {
+      "type": "string",
+      "defaultValue": "fnol",
+      "metadata": {
+        "description": "Short name prefix for resources (letters/numbers only)"
+      }
+    },
+    "containerImage": {
+      "type": "string",
+      "metadata": {
+        "description": "Container image for all FNOL apps"
+      }
+    },
+    "acrName": {
+      "type": "string",
+      "defaultValue": "fnolteamacr",
+      "metadata": {
+        "description": "Existing Azure Container Registry name (same resource group) for image pulls"
+      }
+    },
+    "foundryEndpoint": {
+      "type": "string",
+      "defaultValue": "",
+      "metadata": {
+        "description": "Foundry / Cognitive Services endpoint for Gemma 4 31B (set after model deploy)"
+      }
+    },
+    "foundryDeployment": {
+      "type": "string",
+      "defaultValue": "gemma-4-31b",
+      "metadata": {
+        "description": "Foundry deployment name"
+      }
+    },
+    "aiEnabled": {
+      "type": "string",
+      "defaultValue": "0",
+      "metadata": {
+        "description": "Enable optional AI summary (0 or 1)"
+      }
+    },
+    "sqlAdminObjectId": {
+      "type": "string",
+      "metadata": {
+        "description": "Entra object id for the Azure SQL Entra admin (user or group)"
+      }
+    },
+    "sqlAdminLogin": {
+      "type": "string",
+      "defaultValue": "fnol-sql-admin",
+      "metadata": {
+        "description": "Display login name for the Azure SQL Entra admin"
+      }
+    }
+  },
+  "variables": {
+    "sqlServerName": "[format('{0}-sql-{1}', parameters('namePrefix'), uniqueString(resourceGroup().id))]",
+    "sqlDbName": "fnol",
+    "storageName": "[toLower(take(format('{0}st{1}', parameters('namePrefix'), uniqueString(resourceGroup().id)), 24))]",
+    "envName": "[format('{0}-env', parameters('namePrefix'))]",
+    "logName": "[format('{0}-logs', parameters('namePrefix'))]",
+    "insightsName": "[format('{0}-insights', parameters('namePrefix'))]",
+    "kvName": "[take(format('{0}-kv-{1}', parameters('namePrefix'), uniqueString(resourceGroup().id)), 24)]",
+    "contentSafetyName": "[format('{0}-safety', parameters('namePrefix'))]",
+    "containers": [
+      "case-documents",
+      "policy-wording",
+      "fnol-fixtures",
+      "audit-archive"
+    ],
+    "stepDefs": [
+      {
+        "name": "intake",
+        "script": "server/input_server.py",
+        "port": 8080
+      },
+      {
+        "name": "policy",
+        "script": "server/policy_server.py",
+        "port": 8080
+      },
+      {
+        "name": "rules",
+        "script": "server/rules_server.py",
+        "port": 8080
+      },
+      {
+        "name": "citations",
+        "script": "server/citation_server.py",
+        "port": 8080
+      }
+    ]
+  },
+  "resources": [
+    {
+      "type": "Microsoft.OperationalInsights/workspaces",
+      "apiVersion": "2022-10-01",
+      "name": "[variables('logName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "sku": {
+          "name": "PerGB2018"
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Insights/components",
+      "apiVersion": "2020-02-02",
+      "name": "[variables('insightsName')]",
+      "location": "[parameters('location')]",
+      "kind": "web",
+      "properties": {
+        "Application_Type": "web",
+        "WorkspaceResourceId": "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logName'))]"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.KeyVault/vaults",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('kvName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "tenantId": "[subscription().tenantId]",
+        "sku": {
+          "family": "A",
+          "name": "standard"
+        },
+        "enableRbacAuthorization": true
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts",
+      "apiVersion": "2023-01-01",
+      "name": "[variables('storageName')]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Standard_LRS"
+      },
+      "kind": "StorageV2",
+      "properties": {
+        "allowBlobPublicAccess": false,
+        "minimumTlsVersion": "TLS1_2"
+      }
+    },
+    {
+      "type": "Microsoft.Storage/storageAccounts/blobServices",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}', variables('storageName'), 'default')]",
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "blobContainers",
+        "count": "[length(variables('containers'))]"
+      },
+      "type": "Microsoft.Storage/storageAccounts/blobServices/containers",
+      "apiVersion": "2023-01-01",
+      "name": "[format('{0}/{1}/{2}', variables('storageName'), 'default', variables('containers')[copyIndex()])]",
+      "properties": {
+        "publicAccess": "None"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Storage/storageAccounts/blobServices', variables('storageName'), 'default')]"
+      ]
+    },
+    {
+      "type": "Microsoft.Sql/servers",
+      "apiVersion": "2023-08-01",
+      "name": "[variables('sqlServerName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "administrators": {
+          "administratorType": "ActiveDirectory",
+          "principalType": "User",
+          "login": "[parameters('sqlAdminLogin')]",
+          "sid": "[parameters('sqlAdminObjectId')]",
+          "tenantId": "[subscription().tenantId]",
+          "azureADOnlyAuthentication": true
+        }
+      }
+    },
+    {
+      "type": "Microsoft.Sql/servers/databases",
+      "apiVersion": "2023-08-01",
+      "name": "[format('{0}/{1}', variables('sqlServerName'), variables('sqlDbName'))]",
+      "location": "[parameters('location')]",
+      "sku": {
+        "name": "Basic"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Sql/servers/firewallRules",
+      "apiVersion": "2023-08-01",
+      "name": "[format('{0}/{1}', variables('sqlServerName'), 'AllowAzureServices')]",
+      "properties": {
+        "startIpAddress": "0.0.0.0",
+        "endIpAddress": "0.0.0.0"
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.CognitiveServices/accounts",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('contentSafetyName')]",
+      "location": "[parameters('location')]",
+      "kind": "ContentSafety",
+      "sku": {
+        "name": "S0"
+      },
+      "properties": {
+        "customSubDomainName": "[variables('contentSafetyName')]",
+        "publicNetworkAccess": "Enabled"
+      }
+    },
+    {
+      "type": "Microsoft.App/managedEnvironments",
+      "apiVersion": "2023-05-01",
+      "name": "[variables('envName')]",
+      "location": "[parameters('location')]",
+      "properties": {
+        "appLogsConfiguration": {
+          "destination": "log-analytics",
+          "logAnalyticsConfiguration": {
+            "customerId": "[reference(resourceId('Microsoft.OperationalInsights/workspaces', variables('logName')), '2022-10-01').customerId]",
+            "sharedKey": "[listKeys(resourceId('Microsoft.OperationalInsights/workspaces', variables('logName')), '2022-10-01').primarySharedKey]"
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.OperationalInsights/workspaces', variables('logName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}-enterprise', parameters('namePrefix'))]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "configuration": {
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2023-07-01').loginServer]",
+              "identity": "system"
+            }
+          ],
+          "ingress": {
+            "external": false,
+            "targetPort": 8767,
+            "transport": "http"
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "enterprise",
+              "image": "[parameters('containerImage')]",
+              "env": "[concat(createArray(createObject('name', 'FNOL_SQL_SERVER', 'value', reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01').fullyQualifiedDomainName), createObject('name', 'FNOL_SQL_DATABASE', 'value', variables('sqlDbName')), createObject('name', 'FNOL_BLOB_ACCOUNT', 'value', variables('storageName')), createObject('name', 'FNOL_DOCUMENTS_CONTAINER', 'value', 'case-documents'), createObject('name', 'FNOL_POLICIES_CONTAINER', 'value', 'policy-wording'), createObject('name', 'FNOL_FIXTURES_CONTAINER', 'value', 'fnol-fixtures'), createObject('name', 'FNOL_STEP_TRANSPORT', 'value', 'http'), createObject('name', 'FNOL_MODEL_PROVIDER', 'value', 'azure'), createObject('name', 'FNOL_FOUNDRY_ENDPOINT', 'value', parameters('foundryEndpoint')), createObject('name', 'FNOL_FOUNDRY_DEPLOYMENT', 'value', parameters('foundryDeployment')), createObject('name', 'FNOL_CONTENT_SAFETY_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('contentSafetyName')), '2023-05-01').endpoint), createObject('name', 'FNOL_AI_ENABLED', 'value', parameters('aiEnabled')), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('insightsName')), '2020-02-02').ConnectionString)), createArray(createObject('name', 'FNOL_MOCK_URL', 'value', 'http://localhost:8767')))]",
+              "command": [
+                "uv",
+                "run",
+                "--locked",
+                "python",
+                "tools/runtime.py",
+                "serve",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8767"
+              ],
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1Gi"
+              }
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 2
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('insightsName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('contentSafetyName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "copy": {
+        "name": "stepApps",
+        "count": "[length(variables('stepDefs'))]"
+      },
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}-{1}', parameters('namePrefix'), variables('stepDefs')[copyIndex()].name)]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "configuration": {
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2023-07-01').loginServer]",
+              "identity": "system"
+            }
+          ],
+          "ingress": {
+            "external": false,
+            "targetPort": "[variables('stepDefs')[copyIndex()].port]",
+            "transport": "http"
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "[variables('stepDefs')[copyIndex()].name]",
+              "image": "[parameters('containerImage')]",
+              "env": "[concat(createArray(createObject('name', 'FNOL_SQL_SERVER', 'value', reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01').fullyQualifiedDomainName), createObject('name', 'FNOL_SQL_DATABASE', 'value', variables('sqlDbName')), createObject('name', 'FNOL_BLOB_ACCOUNT', 'value', variables('storageName')), createObject('name', 'FNOL_DOCUMENTS_CONTAINER', 'value', 'case-documents'), createObject('name', 'FNOL_POLICIES_CONTAINER', 'value', 'policy-wording'), createObject('name', 'FNOL_FIXTURES_CONTAINER', 'value', 'fnol-fixtures'), createObject('name', 'FNOL_STEP_TRANSPORT', 'value', 'http'), createObject('name', 'FNOL_MODEL_PROVIDER', 'value', 'azure'), createObject('name', 'FNOL_FOUNDRY_ENDPOINT', 'value', parameters('foundryEndpoint')), createObject('name', 'FNOL_FOUNDRY_DEPLOYMENT', 'value', parameters('foundryDeployment')), createObject('name', 'FNOL_CONTENT_SAFETY_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('contentSafetyName')), '2023-05-01').endpoint), createObject('name', 'FNOL_AI_ENABLED', 'value', parameters('aiEnabled')), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('insightsName')), '2020-02-02').ConnectionString)), createArray(createObject('name', 'FNOL_MOCK_URL', 'value', format('http://{0}-enterprise', parameters('namePrefix'))), createObject('name', 'FNOL_HTTP_PORT', 'value', string(variables('stepDefs')[copyIndex()].port))))]",
+              "command": [
+                "uv",
+                "run",
+                "--locked",
+                "python",
+                "[variables('stepDefs')[copyIndex()].script]",
+                "--http"
+              ],
+              "resources": {
+                "cpu": "[json('0.5')]",
+                "memory": "1Gi"
+              }
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 3
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('insightsName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('contentSafetyName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/containerApps",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}-reviewer', parameters('namePrefix'))]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "managedEnvironmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "configuration": {
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2023-07-01').loginServer]",
+              "identity": "system"
+            }
+          ],
+          "ingress": {
+            "external": true,
+            "targetPort": 8090,
+            "transport": "http"
+          }
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "reviewer",
+              "image": "[parameters('containerImage')]",
+              "env": "[concat(createArray(createObject('name', 'FNOL_SQL_SERVER', 'value', reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01').fullyQualifiedDomainName), createObject('name', 'FNOL_SQL_DATABASE', 'value', variables('sqlDbName')), createObject('name', 'FNOL_BLOB_ACCOUNT', 'value', variables('storageName')), createObject('name', 'FNOL_DOCUMENTS_CONTAINER', 'value', 'case-documents'), createObject('name', 'FNOL_POLICIES_CONTAINER', 'value', 'policy-wording'), createObject('name', 'FNOL_FIXTURES_CONTAINER', 'value', 'fnol-fixtures'), createObject('name', 'FNOL_STEP_TRANSPORT', 'value', 'http'), createObject('name', 'FNOL_MODEL_PROVIDER', 'value', 'azure'), createObject('name', 'FNOL_FOUNDRY_ENDPOINT', 'value', parameters('foundryEndpoint')), createObject('name', 'FNOL_FOUNDRY_DEPLOYMENT', 'value', parameters('foundryDeployment')), createObject('name', 'FNOL_CONTENT_SAFETY_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('contentSafetyName')), '2023-05-01').endpoint), createObject('name', 'FNOL_AI_ENABLED', 'value', parameters('aiEnabled')), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('insightsName')), '2020-02-02').ConnectionString)), createArray(createObject('name', 'FNOL_HTTP_PORT', 'value', '8090'), createObject('name', 'FNOL_REVIEWER_REQUIRE_ROLE', 'value', '1')))]",
+              "command": [
+                "uv",
+                "run",
+                "--locked",
+                "python",
+                "server/reviewer.py",
+                "--host",
+                "0.0.0.0",
+                "--port",
+                "8090"
+              ],
+              "resources": {
+                "cpu": "[json('0.25')]",
+                "memory": "0.5Gi"
+              }
+            }
+          ],
+          "scale": {
+            "minReplicas": 1,
+            "maxReplicas": 2
+          }
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('insightsName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('contentSafetyName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.App/jobs",
+      "apiVersion": "2023-05-01",
+      "name": "[format('{0}-analyst', parameters('namePrefix'))]",
+      "location": "[parameters('location')]",
+      "identity": {
+        "type": "SystemAssigned"
+      },
+      "properties": {
+        "environmentId": "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "configuration": {
+          "triggerType": "Manual",
+          "replicaTimeout": 1800,
+          "replicaRetryLimit": 1,
+          "registries": [
+            {
+              "server": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2023-07-01').loginServer]",
+              "identity": "system"
+            }
+          ]
+        },
+        "template": {
+          "containers": [
+            {
+              "name": "analyst",
+              "image": "[parameters('containerImage')]",
+              "env": "[concat(createArray(createObject('name', 'FNOL_SQL_SERVER', 'value', reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01').fullyQualifiedDomainName), createObject('name', 'FNOL_SQL_DATABASE', 'value', variables('sqlDbName')), createObject('name', 'FNOL_BLOB_ACCOUNT', 'value', variables('storageName')), createObject('name', 'FNOL_DOCUMENTS_CONTAINER', 'value', 'case-documents'), createObject('name', 'FNOL_POLICIES_CONTAINER', 'value', 'policy-wording'), createObject('name', 'FNOL_FIXTURES_CONTAINER', 'value', 'fnol-fixtures'), createObject('name', 'FNOL_STEP_TRANSPORT', 'value', 'http'), createObject('name', 'FNOL_MODEL_PROVIDER', 'value', 'azure'), createObject('name', 'FNOL_FOUNDRY_ENDPOINT', 'value', parameters('foundryEndpoint')), createObject('name', 'FNOL_FOUNDRY_DEPLOYMENT', 'value', parameters('foundryDeployment')), createObject('name', 'FNOL_CONTENT_SAFETY_ENDPOINT', 'value', reference(resourceId('Microsoft.CognitiveServices/accounts', variables('contentSafetyName')), '2023-05-01').endpoint), createObject('name', 'FNOL_AI_ENABLED', 'value', parameters('aiEnabled')), createObject('name', 'APPLICATIONINSIGHTS_CONNECTION_STRING', 'value', reference(resourceId('Microsoft.Insights/components', variables('insightsName')), '2020-02-02').ConnectionString)), createArray(createObject('name', 'FNOL_MOCK_URL', 'value', format('http://{0}-enterprise', parameters('namePrefix'))), createObject('name', 'FNOL_INTAKE_URL', 'value', format('http://{0}-intake', parameters('namePrefix'))), createObject('name', 'FNOL_POLICY_URL', 'value', format('http://{0}-policy', parameters('namePrefix'))), createObject('name', 'FNOL_RULES_URL', 'value', format('http://{0}-rules', parameters('namePrefix'))), createObject('name', 'FNOL_CITATIONS_URL', 'value', format('http://{0}-citations', parameters('namePrefix')))))]",
+              "command": [
+                "uv",
+                "run",
+                "--locked",
+                "python",
+                "-m",
+                "fnol_analyst",
+                "prepare",
+                "--out",
+                "/tmp/results.json"
+              ],
+              "resources": {
+                "cpu": "[json('1.0')]",
+                "memory": "2Gi"
+              }
+            }
+          ]
+        }
+      },
+      "dependsOn": [
+        "[resourceId('Microsoft.Insights/components', variables('insightsName'))]",
+        "[resourceId('Microsoft.App/managedEnvironments', variables('envName'))]",
+        "[resourceId('Microsoft.CognitiveServices/accounts', variables('contentSafetyName'))]",
+        "[resourceId('Microsoft.Sql/servers', variables('sqlServerName'))]",
+        "[resourceId('Microsoft.Storage/storageAccounts', variables('storageName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "sqlFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName')), '2023-08-01').fullyQualifiedDomainName]"
+    },
+    "storageAccount": {
+      "type": "string",
+      "value": "[variables('storageName')]"
+    },
+    "reviewerFqdn": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-reviewer', parameters('namePrefix'))), '2023-05-01').configuration.ingress.fqdn]"
+    },
+    "contentSafetyEndpoint": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.CognitiveServices/accounts', variables('contentSafetyName')), '2023-05-01').endpoint]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[variables('kvName')]"
+    },
+    "appInsightsConnectionString": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.Insights/components', variables('insightsName')), '2020-02-02').ConnectionString]"
+    },
+    "acrLoginServer": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.ContainerRegistry/registries', parameters('acrName')), '2023-07-01').loginServer]"
+    },
+    "resourceGroupName": {
+      "type": "string",
+      "value": "[resourceGroup().name]"
+    },
+    "enterprisePrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-enterprise', parameters('namePrefix'))), '2023-05-01', 'full').identity.principalId]"
+    },
+    "reviewerPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-reviewer', parameters('namePrefix'))), '2023-05-01', 'full').identity.principalId]"
+    },
+    "analystPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/jobs', format('{0}-analyst', parameters('namePrefix'))), '2023-05-01', 'full').identity.principalId]"
+    },
+    "intakePrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-{1}', parameters('namePrefix'), variables('stepDefs')[0].name)), '2023-05-01', 'full').identity.principalId]"
+    },
+    "policyPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-{1}', parameters('namePrefix'), variables('stepDefs')[1].name)), '2023-05-01', 'full').identity.principalId]"
+    },
+    "rulesPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-{1}', parameters('namePrefix'), variables('stepDefs')[2].name)), '2023-05-01', 'full').identity.principalId]"
+    },
+    "citationsPrincipalId": {
+      "type": "string",
+      "value": "[reference(resourceId('Microsoft.App/containerApps', format('{0}-{1}', parameters('namePrefix'), variables('stepDefs')[3].name)), '2023-05-01', 'full').identity.principalId]"
+    }
+  }
+}

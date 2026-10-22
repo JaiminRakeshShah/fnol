@@ -4,3 +4,4 @@ __pycache__/
 submissions/
 reports/
 *.sqlite
+deploy/azure/team.shared.env

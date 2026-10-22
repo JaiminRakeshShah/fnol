@@ -53,10 +53,13 @@ def connection_string() -> str:
             f"Uid={user};Pwd={password};Encrypt=yes;TrustServerCertificate=no;"
             "Connection Timeout=30;"
         )
+    # When multiple managed identities are attached, ODBC needs the client id.
+    msi_client_id = os.environ.get("FNOL_SQL_MSI_CLIENT_ID", "").strip()
+    uid = f"Uid={msi_client_id};" if msi_client_id else ""
     return (
         f"Driver={{{driver}}};Server=tcp:{server},1433;Database={database};"
-        "Authentication=ActiveDirectoryMsi;Encrypt=yes;TrustServerCertificate=no;"
-        "Connection Timeout=30;"
+        f"Authentication=ActiveDirectoryMsi;{uid}"
+        "Encrypt=yes;TrustServerCertificate=no;Connection Timeout=30;"
     )
 
 
@@ -164,6 +167,31 @@ class AzureConnection:
         # SQLite RAISE(ABORT, ...) becomes RAISERROR for T-SQL trigger bodies
         # already authored in deploy SQL; leave store CREATE TRIGGER scripts alone
         # when running against Azure — init uses deploy scripts instead.
+        # rowid is SQLite-only; prefer temporal columns already present on Azure tables.
+        out = re.sub(r",\s*rowid\s+DESC\b", "", out, flags=re.IGNORECASE)
+        out = re.sub(r",\s*rowid\b", "", out, flags=re.IGNORECASE)
+        out = re.sub(
+            r"\bORDER BY\s+rowid\s+DESC\b",
+            "ORDER BY started_at DESC",
+            out,
+            flags=re.IGNORECASE,
+        )
+        out = re.sub(
+            r"\bORDER BY\s+rowid\b",
+            "ORDER BY started_at",
+            out,
+            flags=re.IGNORECASE,
+        )
+        # LIMIT n -> OFFSET/FETCH (T-SQL).
+        out = re.sub(
+            r"\bLIMIT\s+(\d+)\b",
+            r"OFFSET 0 ROWS FETCH NEXT \1 ROWS ONLY",
+            out,
+            flags=re.IGNORECASE,
+        )
+        # `current` is reserved in T-SQL; stores use it as a table alias.
+        out = re.sub(r"\bAS\s+current\b", "AS curr", out, flags=re.IGNORECASE)
+        out = re.sub(r"\bcurrent\.", "curr.", out, flags=re.IGNORECASE)
         return out
 
 

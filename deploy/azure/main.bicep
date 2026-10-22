@@ -7,6 +7,9 @@ param namePrefix string = 'fnol'
 @description('Container image for all FNOL apps')
 param containerImage string
 
+@description('Existing Azure Container Registry name (same resource group) for image pulls')
+param acrName string = 'fnolteamacr'
+
 @description('Foundry / Cognitive Services endpoint for Gemma 4 31B (set after model deploy)')
 param foundryEndpoint string = ''
 
@@ -30,6 +33,10 @@ var logName = '${namePrefix}-logs'
 var insightsName = '${namePrefix}-insights'
 var kvName = take('${namePrefix}-kv-${uniqueString(resourceGroup().id)}', 24)
 var contentSafetyName = '${namePrefix}-safety'
+
+resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: acrName
+}
 
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
   name: logName
@@ -112,6 +119,22 @@ resource sqlDb 'Microsoft.Sql/servers/databases@2023-08-01' = {
   sku: { name: 'Basic' }
 }
 
+resource sqlFwAzure 'Microsoft.Sql/servers/firewallRules@2023-08-01' = {
+  parent: sqlServer
+  name: 'AllowAzureServices'
+  properties: {
+    startIpAddress: '0.0.0.0'
+    endIpAddress: '0.0.0.0'
+  }
+}
+
+var registryConfig = [
+  {
+    server: acr.properties.loginServer
+    identity: 'system'
+  }
+]
+
 resource contentSafety 'Microsoft.CognitiveServices/accounts@2023-05-01' = {
   name: contentSafetyName
   location: location
@@ -160,6 +183,7 @@ resource enterprise 'Microsoft.App/containerApps@2023-05-01' = {
   properties: {
     managedEnvironmentId: containerEnv.id
     configuration: {
+      registries: registryConfig
       ingress: {
         external: false
         targetPort: 8767
@@ -208,6 +232,7 @@ resource stepApps 'Microsoft.App/containerApps@2023-05-01' = [for step in stepDe
   properties: {
     managedEnvironmentId: containerEnv.id
     configuration: {
+      registries: registryConfig
       ingress: {
         external: false
         targetPort: step.port
@@ -246,6 +271,7 @@ resource reviewer 'Microsoft.App/containerApps@2023-05-01' = {
   properties: {
     managedEnvironmentId: containerEnv.id
     configuration: {
+      registries: registryConfig
       ingress: {
         external: true
         targetPort: 8090
@@ -290,6 +316,7 @@ resource analystJob 'Microsoft.App/jobs@2023-05-01' = {
       triggerType: 'Manual'
       replicaTimeout: 1800
       replicaRetryLimit: 1
+      registries: registryConfig
     }
     template: {
       containers: [
@@ -327,3 +354,12 @@ output reviewerFqdn string = reviewer.properties.configuration.ingress.fqdn
 output contentSafetyEndpoint string = contentSafety.properties.endpoint
 output keyVaultName string = keyVault.name
 output appInsightsConnectionString string = appInsights.properties.ConnectionString
+output acrLoginServer string = acr.properties.loginServer
+output resourceGroupName string = resourceGroup().name
+output enterprisePrincipalId string = enterprise.identity.principalId
+output reviewerPrincipalId string = reviewer.identity.principalId
+output analystPrincipalId string = analystJob.identity.principalId
+output intakePrincipalId string = stepApps[0].identity.principalId
+output policyPrincipalId string = stepApps[1].identity.principalId
+output rulesPrincipalId string = stepApps[2].identity.principalId
+output citationsPrincipalId string = stepApps[3].identity.principalId
