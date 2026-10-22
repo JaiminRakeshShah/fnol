@@ -110,6 +110,8 @@ def build_draft(
         "case_id": case_id,
         "classification": route.get("classification"),
         "routing": route.get("route"),
+        # Copied from the route decision, which was set from the claims snapshot.
+        "duplicate_delivery": route.get("duplicate_delivery") is True,
         "policy_ids": _policy_ids(policy, citations),
         "facts": {
             "policy_number": facts_row["policy_number"],
