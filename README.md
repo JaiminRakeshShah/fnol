@@ -52,15 +52,67 @@ In another terminal, retrieve `GET /health` and `GET /v1/cases`. Read `data/dev/
 
 The default path stays local SQLite and stdio. Set `FNOL_DATABASE_URL` to use
 PostgreSQL instead. Docker Compose starts Postgres and points the mock at it.
-The AWS layout is a private S3 bucket, one IAM role per service, Gemma 4 31B
-on Bedrock in us-east-1, and a private RDS PostgreSQL instance. Evidence files
-stay in S3. Intake reads them from S3 and writes revisions into Postgres.
-There is no import of old SQLite files.
+CI runs the suite on SQLite and again on Postgres. Assessment does not require
+an AWS account.
 
-`deploy/aws/foundation.yaml` creates the bucket, KMS key, and task roles.
-`deploy/aws/data.yaml` creates the VPC, private subnets, and the database.
-See `deploy/aws/README.md` for deploy and migrate steps. CI runs the suite on
-SQLite and again on Postgres. Assessment does not require an AWS account.
+In us-east-1 the running system is seven Fargate services on cluster `fnol`,
+in private subnets behind NAT `nat-0563fc6ab85404d39`, with Cloud Map names
+under `fnol.internal`. Step servers listen on port 8080. Those names are
+`http://intake.fnol.internal:8080`, `http://policy.fnol.internal:8080`,
+`http://rules.fnol.internal:8080`, and `http://citations.fnol.internal:8080`.
+The 8081–8084 defaults are only for four local processes on one machine.
+Enterprise listens on 8767 and the reviewer on 8090. There is no load balancer.
+Evidence stays in the private S3 bucket encrypted with the foundation KMS key.
+Rules and the analyst call Gemma 4 31B on Bedrock. Logs go to CloudWatch.
+
+```mermaid
+flowchart TB
+  ops["Operator via ECS Exec"]
+  subgraph vpc["VPC 10.43.0.0/16"]
+    nat["NAT gateway"]
+    subgraph app["Private app subnets"]
+      analyst["analyst"]
+      steps["intake policy rules citations :8080"]
+      enterprise["enterprise :8767"]
+      reviewer["reviewer :8090"]
+      dns["Cloud Map fnol.internal"]
+    end
+    subgraph dbnets["DB subnets"]
+      pg["RDS PostgreSQL private"]
+      legacy["SQL Server fnol legacy"]
+    end
+    efs["EFS SQLite mount /mnt/state"]
+  end
+  ecr["ECR"]
+  s3["S3 and KMS"]
+  bedrock["Bedrock"]
+  logs["CloudWatch"]
+  ops --> analyst
+  analyst --> dns
+  dns --> steps
+  steps --> enterprise
+  steps --> pg
+  analyst --> pg
+  enterprise --> pg
+  reviewer --> pg
+  steps --> efs
+  app --> nat
+  nat --> ecr
+  nat --> s3
+  nat --> bedrock
+  nat --> logs
+  steps --> s3
+  steps --> bedrock
+```
+
+Shared state today is SQLite files on EFS. EFS is NFS, and SQLite's file locks
+are not reliable across tasks, which is why state moves to RDS PostgreSQL.
+There is no import of old SQLite files. The existing SQL Server instance
+`fnol` stays as it is. `deploy/aws/data.yaml` does not create a VPC. It places
+`fnol-postgres` on the existing db subnets. `deploy/aws/services.yaml` registers
+task revisions and, by default, does not replace the running services.
+`deploy/aws/README.md` has the deploy order, the rolling cutover, and the
+choices left open.
 
 ## Evaluate development outputs
 

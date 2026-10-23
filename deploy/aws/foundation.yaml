@@ -1,9 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   FNOL foundation in us-east-1. One private evidence bucket, one KMS key,
-  and a separate task role per service. This stack does not create a NAT
-  gateway or running tasks. The Postgres database is deploy/aws/data.yaml
-  and encrypts with this key.
+  and a separate task role per service. This stack does not create a VPC,
+  a NAT gateway, or running tasks. The Postgres database is deploy/aws/data.yaml
+  and encrypts with this key. Task definitions are deploy/aws/services.yaml.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -13,7 +13,7 @@ Metadata:
       - "deploy only in us-east-1"
       - "task roles cannot call iam or assume another role"
       - "task roles cannot write or delete evidence objects"
-      - "this stack creates no NAT or ECS service; RDS is deploy/aws/data.yaml"
+      - "this stack creates no NAT, VPC, or ECS service; RDS is deploy/aws/data.yaml; tasks are deploy/aws/services.yaml"
     owner: "fnol platform"
 Rules:
   MustBeUsEast1:
@@ -260,6 +260,12 @@ Resources:
       LogGroupName: /fnol/reviewer
       RetentionInDays: 30
       KmsKeyId: !GetAtt EvidenceKey.Arn
+  MigrateLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /fnol/migrate
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt EvidenceKey.Arn
 
   ExecutionRole:
     Type: AWS::IAM::Role
@@ -327,6 +333,7 @@ Resources:
                   - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/analyst:*
                   - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/enterprise:*
                   - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/reviewer:*
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/migrate:*
 
   IntakeRole:
     Type: AWS::IAM::Role

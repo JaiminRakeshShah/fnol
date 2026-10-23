@@ -15,7 +15,7 @@ jobs:
           python-version: "3.12"
       - run: uv sync --locked --group dev
       - run: uv run --locked pytest -q
-      - run: pip install 'cfn-lint==1.58.0' && cfn-lint deploy/aws/foundation.yaml deploy/aws/data.yaml
+      - run: pip install 'cfn-lint==1.58.0' && cfn-lint deploy/aws/foundation.yaml deploy/aws/data.yaml deploy/aws/services.yaml
 
   test-postgres:
     runs-on: ubuntu-latest
