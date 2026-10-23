@@ -1,6 +1,9 @@
--- The migrate task connects as fnol_migrate with IAM. It does not read the
--- master password secret. Service roles may read the migration ledger and
--- nothing else in public. They do not create it.
+-- The migrate task signs in as fnol_migrate with IAM (rds-db:connect).
+-- That action only allows the login. It does not grant CREATE TABLE.
+-- On RDS for PostgreSQL 15+, public has no CREATE for ordinary roles, which
+-- is why a service login fails with "permission denied for schema public".
+-- fnol_migrate receives the database privileges that create and record
+-- objects. Service roles may read the ledger and nothing else in public.
 
 DO $$
 BEGIN
@@ -25,12 +28,18 @@ DO $$
 DECLARE
   dbname text := current_database();
 BEGIN
-  EXECUTE format('GRANT CONNECT ON DATABASE %I TO fnol_migrate', dbname);
+  EXECUTE format('GRANT CONNECT, CREATE ON DATABASE %I TO fnol_migrate', dbname);
 END
 $$;
 
+-- rds_superuser is not a superuser, and RDS revokes CREATE on public from
+-- PUBLIC. This grant is what lets the migrate role create the ledger and
+-- later objects. Do not give it to the service roles.
+GRANT CREATE ON SCHEMA public TO fnol_migrate;
+
+GRANT SELECT, INSERT ON public.fnol_schema_migrations TO fnol_migrate;
+
 GRANT SELECT ON public.fnol_schema_migrations TO
-  fnol_migrate,
   fnol_intake,
   fnol_policy,
   fnol_rules,

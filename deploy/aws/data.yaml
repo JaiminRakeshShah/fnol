@@ -347,6 +347,28 @@ Resources:
                   - Region: !Ref AWS::Region
                     Account: !Ref AWS::AccountId
                     DbResource: !GetAtt Database.DbiResourceId
+        # Bootstrap only. 008 creates fnol_migrate, so the first apply of that
+        # file still signs in as the master user. The task definition does not
+        # set FNOL_DB_SECRET_ARN; a one-time override does. The secret has no
+        # host, and the code uses FNOL_RDS_HOST. Drop this policy after 008
+        # has been applied. Creating tables is not an IAM action.
+        - PolicyName: read-master-secret
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Sid: ReadMasterSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:DescribeSecret
+                Resource: !GetAtt Database.MasterUserSecret.SecretArn
+              - Sid: DecryptMasterSecret
+                Effect: Allow
+                Action: kms:Decrypt
+                Resource: !Ref EvidenceKeyArn
+                Condition:
+                  StringEquals:
+                    kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
 
   IntakeDbConnect:
     Type: AWS::IAM::Policy

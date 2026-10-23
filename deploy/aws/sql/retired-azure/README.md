@@ -1,2 +1,0 @@
--- Retired Azure SQL (T-SQL). The application never ran these scripts.
--- PostgreSQL migrations live in ../postgres and are applied by tools/migrate.py.
