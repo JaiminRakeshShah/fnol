@@ -339,8 +339,7 @@ class ServiceTests(unittest.TestCase):
         )
 
     def _events(self):
-        with sqlite3.connect(self.stores.trace.path) as db:
-            db.row_factory = sqlite3.Row
+        with self.stores.trace.connect() as db:
             return [dict(row) for row in db.execute(
                 "SELECT * FROM trace_events WHERE actor='citations' ORDER BY rowid"
             )]
@@ -603,8 +602,7 @@ class DevGoldTests(unittest.TestCase):
         self.assertIn('"intake_deliveries": 2', quotes)
 
     def test_trace_stores_the_hash_and_not_the_file(self):
-        with sqlite3.connect(self.state / "trace.sqlite") as db:
-            db.row_factory = sqlite3.Row
+        with Stores(self.state).trace.connect() as db:
             events = [dict(row) for row in db.execute(
                 "SELECT * FROM trace_events WHERE actor='citations' AND status='ok'"
             )]

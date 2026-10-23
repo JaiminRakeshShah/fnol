@@ -9,7 +9,7 @@ import unittest
 from http.server import ThreadingHTTPServer
 from unittest import mock
 
-from fnol_analyst.http_steps import HttpStepClient
+from fnol_analyst.http_steps import HttpStepClient, step_urls
 from fnol_analyst.servers import http_transport
 from server.http_serve import create_server
 
@@ -30,6 +30,40 @@ class HttpStepServerTests(unittest.TestCase):
         finally:
             server.shutdown()
             server.server_close()
+
+    def test_local_defaults_are_distinct_and_cloud_map_uses_8080(self):
+        names = (
+            "FNOL_INTAKE_URL",
+            "FNOL_POLICY_URL",
+            "FNOL_RULES_URL",
+            "FNOL_CITATIONS_URL",
+        )
+        with mock.patch.dict(os.environ, {}, clear=False):
+            for name in names:
+                os.environ.pop(name, None)
+            local = step_urls()
+        self.assertEqual(
+            local,
+            {
+                "intake": "http://127.0.0.1:8081",
+                "policy": "http://127.0.0.1:8082",
+                "rules": "http://127.0.0.1:8083",
+                "citations": "http://127.0.0.1:8084",
+            },
+        )
+        with mock.patch.dict(
+            os.environ,
+            {
+                "FNOL_INTAKE_URL": "http://intake.fnol.internal:8080/",
+                "FNOL_POLICY_URL": "http://policy.fnol.internal:8080",
+                "FNOL_RULES_URL": "http://rules.fnol.internal:8080",
+                "FNOL_CITATIONS_URL": "http://citations.fnol.internal:8080",
+            },
+            clear=False,
+        ):
+            live = step_urls()
+        self.assertEqual(live["intake"], "http://intake.fnol.internal:8080")
+        self.assertTrue(all(url.endswith(":8080") for url in live.values()))
 
     def test_http_transport_flag(self):
         with mock.patch.dict(os.environ, {"FNOL_STEP_TRANSPORT": "http"}, clear=False):

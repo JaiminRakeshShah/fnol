@@ -24,7 +24,7 @@ def start_ingestion(
     stores = Stores(directory)
     result = run_intake(stores, mock_url, documents, policies, transport=transport)
     return {
-        "input_sqlite": str(stores.input.path.resolve()),
+        "input_sqlite": stores.input.locator,
         "case_count": len(result["revisions"]),
         "revisions": [
             {"case_id": revision.case_id, "revision": revision.revision}

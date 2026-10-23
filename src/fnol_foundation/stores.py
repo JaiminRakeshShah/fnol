@@ -1,14 +1,17 @@
-"""SQLite input, output, and append-only trace stores.
+"""Input, output, and append-only trace stores.
 
-Three files in one directory: input.sqlite, output.sqlite, and trace.sqlite.
-FNOL_STATE_DIR overrides the default .state directory.
+SQLite is the default: three files in one directory (input.sqlite, output.sqlite,
+trace.sqlite). FNOL_STATE_DIR overrides the default .state directory.
+
+PostgreSQL is selected by FNOL_DATABASE_URL, FNOL_DB_SECRET_ARN, or FNOL_RDS_HOST.
+The same tables live in the input, output, and trace schemas. Triggers reject
+updates and deletes. See fnol_foundation.db and tools/migrate.py.
 """
 
 import json
 import os
-import sqlite3
+import re
 import uuid
-from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -19,6 +22,13 @@ from fnol_foundation.canonical import (
     canonical,
     digest,
     redact_for_store,
+)
+from fnol_foundation.db import (
+    UniqueViolation,
+    drop_namespace,
+    open_db,
+    schema_for,
+    using_postgres,
 )
 
 TRACE_COLUMNS = (
@@ -282,28 +292,51 @@ class ImmutableRecordError(ValueError):
     """A second write tried to change an append-only payload or decision."""
 
 
-@contextmanager
-def connect(path):
-    """Open one SQLite connection.
+class _Store:
+    """One logical database (a SQLite file, or one Postgres schema)."""
 
-    WAL lets readers proceed while another process writes. busy_timeout matches
-    the connect timeout so multi-process step servers wait instead of failing
-    immediately under contention.
-    """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=15)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA journal_mode=WAL")
-    db.execute("PRAGMA busy_timeout=15000")
-    try:
-        yield db
-        db.commit()
-    except Exception:
-        db.rollback()
-        raise
-    finally:
-        db.close()
+    kind = ""
+
+    def __init__(self, path):
+        self.path = Path(path)
+        self.backend = "postgres" if using_postgres() else "sqlite"
+        self.schema = schema_for(self.path, self.kind) if self.kind else ""
+
+    def _conn(self):
+        return open_db(self.path, kind=self.kind)
+
+    def connect(self):
+        """Open a connection. Tests use this to assert triggers and read rows."""
+        return self._conn()
+
+    @property
+    def locator(self) -> str:
+        if self.backend == "postgres":
+            return f"postgres:{self.schema}"
+        return str(self.path.resolve())
+
+    def stored_blob(self) -> bytes:
+        """Bytes a caller can scan for restricted markers.
+
+        SQLite returns the file. PostgreSQL returns the text of every row.
+        """
+        if self.backend == "sqlite":
+            return self.path.read_bytes()
+        parts: list[str] = []
+        with self._conn() as db:
+            tables = db.execute(
+                """SELECT table_name FROM information_schema.tables
+                   WHERE table_schema = current_schema() AND table_type = 'BASE TABLE'
+                   ORDER BY table_name"""
+            ).fetchall()
+            for table in tables:
+                name = table["table_name"]
+                if not re.fullmatch(r"[a-z_][a-z0-9_]*", name):
+                    continue
+                rows = db.execute(f"SELECT * FROM {name}").fetchall()
+                for row in rows:
+                    parts.append(repr(dict(row)))
+        return "\n".join(parts).encode()
 
 
 @dataclass(frozen=True)
@@ -365,10 +398,14 @@ def _add_column(db, table, name, declaration):
         db.execute(f"ALTER TABLE {table} ADD COLUMN {name} {declaration}")
 
 
-class InputStore:
+class InputStore(_Store):
+    kind = "input"
+
     def __init__(self, path):
-        self.path = Path(path)
-        with connect(self.path) as db:
+        super().__init__(path)
+        if self.backend == "postgres":
+            return
+        with self._conn() as db:
             db.executescript(INPUT_SCHEMA)
             _add_column(db, "input_revisions", "trace_id", "TEXT")
             _add_column(db, "input_revisions", "repeated_fields", "TEXT")
@@ -403,23 +440,30 @@ class InputStore:
         when = _as_text(ingested_at) or utc_now()
         columns = ["case_id", "revision", "ingested_at", "document_set_sha256", "trace_id", *INPUT_COLUMNS]
         placeholders = ", ".join("?" for _ in columns)
-        with connect(self.path) as db:
-            db.execute("BEGIN IMMEDIATE")
-            row = db.execute(
-                "SELECT COALESCE(MAX(revision), 0) FROM input_revisions WHERE case_id = ?",
-                (case_id,),
-            ).fetchone()
-            revision = int(row[0]) + 1
-            values = [case_id, revision, when, sha, trace_id]
-            values.extend(_bind_value(column, payload.get(column)) for column in INPUT_COLUMNS)
-            db.execute(
-                f"INSERT INTO input_revisions ({', '.join(columns)}) VALUES ({placeholders})",
-                values,
-            )
+        revision = None
+        for _attempt in range(2):
+            try:
+                with self._conn() as db:
+                    db.begin_immediate(f"revision:{case_id}")
+                    row = db.execute(
+                        "SELECT COALESCE(MAX(revision), 0) FROM input_revisions WHERE case_id = ?",
+                        (case_id,),
+                    ).fetchone()
+                    revision = int(row[0]) + 1
+                    values = [case_id, revision, when, sha, trace_id]
+                    values.extend(_bind_value(column, payload.get(column)) for column in INPUT_COLUMNS)
+                    db.execute(
+                        f"INSERT INTO input_revisions ({', '.join(columns)}) VALUES ({placeholders})",
+                        values,
+                    )
+                break
+            except UniqueViolation:
+                if _attempt == 1:
+                    raise
         return self.get_revision(case_id, revision)
 
     def get_revision(self, case_id, revision=None):
-        with connect(self.path) as db:
+        with self._conn() as db:
             if revision is None:
                 row = db.execute(
                     """SELECT * FROM input_revisions
@@ -444,7 +488,7 @@ class InputStore:
 
     def latest_loss_keys(self):
         """Latest revision of each case: case_id and loss_reference, ordered by case_id."""
-        with connect(self.path) as db:
+        with self._conn() as db:
             rows = db.execute(
                 """SELECT case_id, loss_reference
                    FROM input_revisions AS current
@@ -460,7 +504,7 @@ class InputStore:
         """Replace the procedure-source table with this run's id and sha256 rows."""
         when = utc_now()
         assert_no_restricted(sources)
-        with connect(self.path) as db:
+        with self._conn() as db:
             db.execute("DELETE FROM procedure_sources")
             db.executemany(
                 "INSERT INTO procedure_sources (source_id, sha256, loaded_at) VALUES (?, ?, ?)",
@@ -468,7 +512,7 @@ class InputStore:
             )
 
     def list_procedures(self):
-        with connect(self.path) as db:
+        with self._conn() as db:
             rows = db.execute(
                 "SELECT source_id, sha256, loaded_at FROM procedure_sources ORDER BY source_id"
             ).fetchall()
@@ -489,8 +533,8 @@ class InputStore:
         body = canonical(cleaned)
         sha = digest(cleaned)
         when = utc_now()
-        with connect(self.path) as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self._conn() as db:
+            db.begin_immediate(f"payload:{case_id}:{input_revision}:{tool}")
             existing = db.execute(
                 """SELECT sha256 FROM tool_payloads
                    WHERE case_id = ? AND input_revision = ? AND tool = ?""",
@@ -500,16 +544,26 @@ class InputStore:
                 if existing["sha256"] == sha:
                     return sha
                 raise ImmutableRecordError("tool payload already stored for this revision")
-            db.execute(
-                """INSERT INTO tool_payloads
-                   (case_id, input_revision, tool, raw_json, sha256, stored_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (case_id, input_revision, tool, body, sha, when),
-            )
+            try:
+                db.execute(
+                    """INSERT INTO tool_payloads
+                       (case_id, input_revision, tool, raw_json, sha256, stored_at)
+                       VALUES (?, ?, ?, ?, ?, ?)""",
+                    (case_id, input_revision, tool, body, sha, when),
+                )
+            except UniqueViolation:
+                existing = db.execute(
+                    """SELECT sha256 FROM tool_payloads
+                       WHERE case_id = ? AND input_revision = ? AND tool = ?""",
+                    (case_id, input_revision, tool),
+                ).fetchone()
+                if existing is not None and existing["sha256"] == sha:
+                    return sha
+                raise ImmutableRecordError("tool payload already stored for this revision")
         return sha
 
     def get_tool_payload(self, case_id, tool, input_revision):
-        with connect(self.path) as db:
+        with self._conn() as db:
             row = db.execute(
                 """SELECT raw_json, sha256, stored_at FROM tool_payloads
                    WHERE case_id = ? AND input_revision = ? AND tool = ?""",
@@ -537,32 +591,44 @@ class InputStore:
             assert_no_restricted(claims_sha256)
         stored = canonical(body)
         when = utc_now()
-        with connect(self.path) as db:
-            db.execute("BEGIN IMMEDIATE")
+
+        def _same(existing):
+            return (
+                existing["body_json"] == stored
+                and existing["policy_sha256"] == policy_sha256
+                and existing["claims_sha256"] == claims_sha256
+            )
+
+        with self._conn() as db:
+            db.begin_immediate(f"decision:{case_id}:{input_revision}:{kind}")
             existing = db.execute(
                 """SELECT body_json, policy_sha256, claims_sha256 FROM decisions
                    WHERE case_id = ? AND input_revision = ? AND kind = ?""",
                 (case_id, input_revision, kind),
             ).fetchone()
             if existing is not None:
-                same = (
-                    existing["body_json"] == stored
-                    and existing["policy_sha256"] == policy_sha256
-                    and existing["claims_sha256"] == claims_sha256
-                )
-                if not same:
+                if not _same(existing):
                     raise ImmutableRecordError("decision already stored for this revision")
             else:
-                db.execute(
-                    """INSERT INTO decisions
-                       (case_id, input_revision, kind, body_json, policy_sha256, claims_sha256, stored_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                    (case_id, input_revision, kind, stored, policy_sha256, claims_sha256, when),
-                )
+                try:
+                    db.execute(
+                        """INSERT INTO decisions
+                           (case_id, input_revision, kind, body_json, policy_sha256, claims_sha256, stored_at)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (case_id, input_revision, kind, stored, policy_sha256, claims_sha256, when),
+                    )
+                except UniqueViolation:
+                    existing = db.execute(
+                        """SELECT body_json, policy_sha256, claims_sha256 FROM decisions
+                           WHERE case_id = ? AND input_revision = ? AND kind = ?""",
+                        (case_id, input_revision, kind),
+                    ).fetchone()
+                    if existing is None or not _same(existing):
+                        raise ImmutableRecordError("decision already stored for this revision")
         return self.get_decision(case_id, input_revision, kind)
 
     def get_decision(self, case_id, input_revision, kind):
-        with connect(self.path) as db:
+        with self._conn() as db:
             row = db.execute(
                 """SELECT body_json, policy_sha256, claims_sha256, stored_at FROM decisions
                    WHERE case_id = ? AND input_revision = ? AND kind = ?""",
@@ -586,10 +652,14 @@ class InputStore:
             raise ValueError("input revision does not exist")
 
 
-class OutputStore:
+class OutputStore(_Store):
+    kind = "output"
+
     def __init__(self, path):
-        self.path = Path(path)
-        with connect(self.path) as db:
+        super().__init__(path)
+        if self.backend == "postgres":
+            return
+        with self._conn() as db:
             db.executescript(OUTPUT_SCHEMA)
 
     def record_draft(self, case_id, draft, input_revision=None, draft_id=None, status="recorded", created_at=None):
@@ -603,7 +673,7 @@ class OutputStore:
         draft_hash = digest(draft)
         draft_id = draft_id or "draft_" + uuid.uuid4().hex[:12]
         when = _as_text(created_at) or utc_now()
-        with connect(self.path) as db:
+        with self._conn() as db:
             db.execute(
                 """INSERT INTO drafts
                    (draft_id, case_id, input_revision, draft_json, draft_hash, status, created_at)
@@ -613,13 +683,13 @@ class OutputStore:
         return self.get_draft(draft_id)
 
     def get_draft(self, draft_id):
-        with connect(self.path) as db:
+        with self._conn() as db:
             row = db.execute("SELECT * FROM drafts WHERE draft_id = ?", (draft_id,)).fetchone()
         return None if row is None else self._record(row)
 
     def latest_draft(self, case_id):
         """Most recently recorded draft for this case, or None."""
-        with connect(self.path) as db:
+        with self._conn() as db:
             row = db.execute(
                 """SELECT * FROM drafts WHERE case_id = ?
                    ORDER BY created_at DESC, rowid DESC LIMIT 1""",
@@ -643,7 +713,7 @@ class OutputStore:
     def update_status(self, draft_id, status, review_id=None, outcome=None, *, clear_review_id=False):
         """Record review progress. The draft body and hash stay as inserted."""
         assert_no_restricted({"status": status, "review_id": review_id, "outcome": outcome})
-        with connect(self.path) as db:
+        with self._conn() as db:
             if clear_review_id:
                 cur = db.execute(
                     """UPDATE drafts
@@ -663,10 +733,14 @@ class OutputStore:
         return self.get_draft(draft_id)
 
 
-class TraceStore:
+class TraceStore(_Store):
+    kind = "trace"
+
     def __init__(self, path):
-        self.path = Path(path)
-        with connect(self.path) as db:
+        super().__init__(path)
+        if self.backend == "postgres":
+            return
+        with self._conn() as db:
             db.executescript(TRACE_SCHEMA)
             _add_column(db, "trace_events", "event", "TEXT")
             _add_column(db, "trace_events", "prev_hash", "TEXT")
@@ -685,8 +759,8 @@ class TraceStore:
         assert_no_restricted({key: value for key, value in event.items() if value is not None})
         columns = ", ".join(TRACE_COLUMNS)
         placeholders = ", ".join("?" for _ in TRACE_COLUMNS)
-        with connect(self.path) as db:
-            db.execute("BEGIN IMMEDIATE")
+        with self._conn() as db:
+            db.begin_immediate("trace-chain")
             previous = db.execute(
                 "SELECT event_hash FROM trace_events ORDER BY rowid DESC LIMIT 1"
             ).fetchone()
@@ -705,26 +779,43 @@ class TraceStore:
         return self.get_event(event["event_id"])
 
     def get_event(self, event_id):
-        with connect(self.path) as db:
+        with self._conn() as db:
             row = db.execute("SELECT * FROM trace_events WHERE event_id = ?", (event_id,)).fetchone()
         return None if row is None else {name: row[name] for name in TRACE_COLUMNS}
 
     def column_names(self):
-        with connect(self.path) as db:
-            rows = db.execute("PRAGMA table_info(trace_events)").fetchall()
-        return tuple(row["name"] for row in rows)
+        with self._conn() as db:
+            if self.backend == "sqlite":
+                rows = db.execute("PRAGMA table_info(trace_events)").fetchall()
+                found = [row["name"] for row in rows]
+            else:
+                rows = db.execute(
+                    """SELECT column_name FROM information_schema.columns
+                       WHERE table_schema = current_schema() AND table_name = 'trace_events'
+                       ORDER BY ordinal_position"""
+                ).fetchall()
+                found = [row["column_name"] for row in rows]
+        return tuple(name for name in found if name != "seq")
 
 
 class Stores:
-    """The three SQLite files for one local state directory."""
+    """Input, output, and trace for one state directory."""
 
     def __init__(self, directory=None):
         self.directory = Path(directory) if directory is not None else state_dir()
-        self.directory.mkdir(parents=True, exist_ok=True)
+        if not using_postgres():
+            self.directory.mkdir(parents=True, exist_ok=True)
         self.input = InputStore(self.directory / "input.sqlite")
         self.output = OutputStore(self.directory / "output.sqlite")
         self.trace = TraceStore(self.directory / "trace.sqlite")
 
+    @property
+    def backend(self):
+        return self.input.backend
+
     def drop(self):
+        if using_postgres():
+            drop_namespace(self.directory, ("input", "output", "trace"))
+            return
         for path in (self.input.path, self.output.path, self.trace.path):
             path.unlink(missing_ok=True)

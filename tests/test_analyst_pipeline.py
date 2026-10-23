@@ -149,7 +149,7 @@ class AiGateTests(unittest.TestCase):
         self.assertIsNone(record.draft["evidence_summary"])
         self.assertEqual(record.draft["safety_status"], "skipped")
         self.assertEqual(self.calls, [])
-        with sqlite3.connect(stores.trace.path) as db:
+        with stores.trace.connect() as db:
             steps = [row[0] for row in db.execute(
                 "SELECT step FROM trace_events WHERE actor='analyst' ORDER BY rowid"
             )]
@@ -169,7 +169,7 @@ class AiGateTests(unittest.TestCase):
         self.assertEqual(record.draft_hash, digest(record.draft))
         self.assertEqual(len(self.calls), 1)
         self.assertNotIn("RAW FILE TEXT", self.calls[0][1])
-        with sqlite3.connect(stores.trace.path) as db:
+        with stores.trace.connect() as db:
             rows = list(db.execute(
                 """SELECT step, event, model_id, input_tokens, output_tokens,
                           shadow_narrative, shadow_safety_status, output_sha256, draft_id
@@ -204,7 +204,7 @@ class AiGateTests(unittest.TestCase):
         self.assertEqual(record.draft["safety_status"], "skipped")
         self.assertIn("Draft FNOL for the human handler", record.draft["narrative"])
         self.assertNotIn("Coverage is approved", record.draft["narrative"])
-        self.assertNotIn(b"Coverage is approved", stores.trace.path.read_bytes())
+        self.assertNotIn(b"Coverage is approved", stores.trace.stored_blob())
         self.assertEqual(record.status, "recorded")
 
     def test_ai_on_model_error_falls_back(self):

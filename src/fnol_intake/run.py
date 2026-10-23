@@ -358,6 +358,8 @@ def _payload(item):
         "raw_report": None if report is None else report["raw_text"],
         "repeated_fields": repeated,
         "extra_fields": extra,
-        "injection_field_status": injection.field_status(extra),
+        "injection_field_status": injection.instruction_status(
+            *(document["raw_text"] for document in item["documents"])
+        ),
     }
     return payload

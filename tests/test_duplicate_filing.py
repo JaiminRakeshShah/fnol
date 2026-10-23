@@ -6,7 +6,6 @@ the live ledger. Both cases still receive an evaluation object.
 
 import json
 import socket
-import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -27,6 +26,7 @@ from fnol_intake.pipeline import start_ingestion
 from fnol_policy.pipeline import start_policy
 from fnol_rules.pipeline import start_routing
 from tools.evaluate import evaluate
+from tools.runtime import connect
 
 DEV_DOCUMENTS = ROOT / "data" / "dev" / "documents"
 DEV_POLICIES = ROOT / "data" / "dev" / "policies"
@@ -115,9 +115,9 @@ class DuplicateFilingTests(unittest.TestCase):
             self.assertFalse(linked["posted"])
             self.assertEqual(linked["record_id"], "auto-loss-nine")
 
-            with sqlite3.connect(mock_state) as db:
+            with connect(mock_state) as db:
                 records = db.execute("SELECT id, case_id FROM records").fetchall()
-            self.assertEqual(records, [("auto-loss-nine", "AUTO-D09")])
+            self.assertEqual([(row["id"], row["case_id"]) for row in records], [("auto-loss-nine", "AUTO-D09")])
 
             again = json.loads(client.export(exported, list(PAIR)).read_text())
             self.assertEqual([item["case_id"] for item in again], list(PAIR))

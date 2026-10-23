@@ -11,7 +11,7 @@ from typing import Any
 from fnol_desk.auth import AuthError, User
 from fnol_foundation.canonical import digest
 from fnol_foundation.stores import Stores
-from tools.runtime import audit, connect as mock_connect
+from tools.runtime import audit, connect as mock_connect, mock_state_present
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -50,7 +50,7 @@ def send_to_handlers(
         raise DeskActionError("not_found", f"no draft for {case_id}", 404)
 
     # If a matching pending review already exists, do not create another.
-    if mock_state.exists():
+    if mock_state_present(mock_state):
         with mock_connect(mock_state) as db:
             existing = db.execute(
                 """SELECT id, status, hash FROM reviews
@@ -161,7 +161,7 @@ def _decide(
 ) -> dict[str, Any]:
     stores = stores or Stores()
     mock_state = Path(mock_state) if mock_state is not None else default_mock_state()
-    if not mock_state.exists():
+    if not mock_state_present(mock_state):
         raise DeskActionError("mock_missing", "mock state database is missing", 503)
     record = stores.output.latest_draft(case_id)
     if record is None:

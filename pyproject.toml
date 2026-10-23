@@ -10,6 +10,9 @@ dev = ["pytest>=8.0"]
 aws = [
     "boto3>=1.35.0",
 ]
+postgres = [
+    "psycopg[binary]>=3.2",
+]
 
 [tool.uv]
 package = false

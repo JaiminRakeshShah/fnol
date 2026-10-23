@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   FNOL foundation in us-east-1. One private evidence bucket, one KMS key,
-  and a separate task role per service. This stack does not create a database,
-  a NAT gateway, VPC endpoints, or running tasks.
+  and a separate task role per service. This stack does not create a VPC,
+  a NAT gateway, or running tasks. The Postgres database is deploy/aws/data.yaml
+  and encrypts with this key. Task definitions are deploy/aws/services.yaml.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -12,7 +13,7 @@ Metadata:
       - "deploy only in us-east-1"
       - "task roles cannot call iam or assume another role"
       - "task roles cannot write or delete evidence objects"
-      - "this stack creates no RDS, NAT, interface endpoint, or ECS service"
+      - "this stack creates no NAT, VPC, or ECS service; RDS is deploy/aws/data.yaml; tasks are deploy/aws/services.yaml"
     owner: "fnol platform"
 Rules:
   MustBeUsEast1:
@@ -75,6 +76,7 @@ Resources:
         must:
           - "retain on stack delete"
           - "logs service may use it only for /fnol log groups in this account"
+          - "RDS and Secrets Manager in this account may use it for the FNOL database"
         mutable: must-never-change
     Properties:
       Description: FNOL evidence and log encryption
@@ -104,6 +106,38 @@ Resources:
                 aws:SourceAccount: !Ref AWS::AccountId
               ArnLike:
                 kms:EncryptionContext:aws:logs:arn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/*
+          - Sid: AllowRdsInAccount
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:CreateGrant
+              - kms:ListGrants
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:CallerAccount: !Ref AWS::AccountId
+                kms:ViaService: !Sub rds.${AWS::Region}.amazonaws.com
+          - Sid: AllowSecretsManager
+            Effect: Allow
+            Principal:
+              Service: secretsmanager.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:CreateGrant
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
 
   EvidenceKeyAlias:
     Type: AWS::KMS::Alias
@@ -226,6 +260,12 @@ Resources:
       LogGroupName: /fnol/reviewer
       RetentionInDays: 30
       KmsKeyId: !GetAtt EvidenceKey.Arn
+  MigrateLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: /fnol/migrate
+      RetentionInDays: 30
+      KmsKeyId: !GetAtt EvidenceKey.Arn
 
   ExecutionRole:
     Type: AWS::IAM::Role
@@ -293,6 +333,7 @@ Resources:
                   - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/analyst:*
                   - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/enterprise:*
                   - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/reviewer:*
+                  - !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/migrate:*
 
   IntakeRole:
     Type: AWS::IAM::Role
@@ -448,6 +489,10 @@ Resources:
                 Effect: Allow
                 Action: bedrock:InvokeModel
                 Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/google.gemma-4-31b
+              - Sid: CreateMantleInference
+                Effect: Allow
+                Action: bedrock-mantle:CreateInference
+                Resource: !Sub arn:aws:bedrock-mantle:${AWS::Region}:${AWS::AccountId}:project/default
               - Sid: ApplyShadowGuardrail
                 Effect: Allow
                 Action: bedrock:ApplyGuardrail
@@ -505,6 +550,10 @@ Resources:
                 Effect: Allow
                 Action: bedrock:InvokeModel
                 Resource: !Sub arn:aws:bedrock:${AWS::Region}::foundation-model/google.gemma-4-31b
+              - Sid: CreateMantleInference
+                Effect: Allow
+                Action: bedrock-mantle:CreateInference
+                Resource: !Sub arn:aws:bedrock-mantle:${AWS::Region}:${AWS::AccountId}:project/default
       AssumeRolePolicyDocument: !Sub
         - |
           {
@@ -584,6 +633,8 @@ Resources:
           Cluster: !Ref ClusterName
 
 Outputs:
+  TaskBoundaryArn:
+    Value: !Ref TaskBoundary
   BucketName:
     Value: !Ref EvidenceBucket
   BucketArn:

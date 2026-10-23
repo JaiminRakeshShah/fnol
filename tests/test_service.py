@@ -25,8 +25,7 @@ def _fields() -> StructuredFields:
 
 
 def _events(stores, case_id):
-    with sqlite3.connect(stores.trace.path) as db:
-        db.row_factory = sqlite3.Row
+    with stores.trace.connect() as db:
         return db.execute(
             """SELECT event, step, status, attempt, mock_http_status, input_revision, trace_id
                FROM trace_events WHERE case_id = ? ORDER BY rowid""",

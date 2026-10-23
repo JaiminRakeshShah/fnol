@@ -1,7 +1,7 @@
 """Desk accounts and server-side sessions.
 
-Identity lives in ``.state/desk.sqlite``, separate from the mock and the
-immutable draft store. Sessions are opaque tokens; only the hash is stored.
+Identity lives in ``.state/desk.sqlite``, or in the Postgres ``desk`` schema
+when a database URL is set. Sessions are opaque tokens; only the hash is stored.
 """
 
 from __future__ import annotations
@@ -9,11 +9,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from fnol_foundation.db import open_db, using_postgres
 from fnol_foundation.stores import state_dir
 
 TEAMS = frozenset({"handlers", "analysts", "security"})
@@ -99,21 +99,20 @@ def _hash_token(token: str) -> str:
 
 def desk_db_path(directory: Path | None = None) -> Path:
     base = Path(directory) if directory is not None else state_dir()
-    base.mkdir(parents=True, exist_ok=True)
+    if not using_postgres():
+        base.mkdir(parents=True, exist_ok=True)
     return base / "desk.sqlite"
 
 
-def connect_auth(path: Path | None = None) -> sqlite3.Connection:
+def connect_auth(path: Path | None = None):
     db_path = Path(path) if path is not None else desk_db_path()
-    db_path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(db_path, timeout=15)
-    db.row_factory = sqlite3.Row
-    db.execute("PRAGMA foreign_keys=ON")
-    db.executescript(AUTH_SCHEMA)
+    db = open_db(db_path, kind="desk")
+    if not using_postgres():
+        db.executescript(AUTH_SCHEMA)
     return db
 
 
-def seed_users(db: sqlite3.Connection) -> None:
+def seed_users(db) -> None:
     """Insert the three fictional accounts if the users table is empty."""
     count = db.execute("SELECT COUNT(*) AS n FROM users").fetchone()["n"]
     if count:

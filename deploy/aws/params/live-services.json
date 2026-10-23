@@ -1,0 +1,54 @@
+[
+  {
+    "ParameterKey": "MigrateSecretArn",
+    "ParameterValue": "arn:aws:secretsmanager:us-east-1:104005345381:secret:REPLACE_WITH_MasterSecretArn"
+  },
+  {
+    "ParameterKey": "DatabaseEndpoint",
+    "ParameterValue": "REPLACE_WITH_DatabaseEndpoint"
+  },
+  {
+    "ParameterKey": "ImageTag",
+    "ParameterValue": "REPLACE_WITH_TAG"
+  },
+  {
+    "ParameterKey": "StateBackend",
+    "ParameterValue": "postgres"
+  },
+  {
+    "ParameterKey": "PgNamespace",
+    "ParameterValue": "shared"
+  },
+  {
+    "ParameterKey": "DatabaseName",
+    "ParameterValue": "fnol"
+  },
+  {
+    "ParameterKey": "MountEfs",
+    "ParameterValue": "true"
+  },
+  {
+    "ParameterKey": "EfsFileSystemId",
+    "ParameterValue": "fs-035b11da15aa05ed6"
+  },
+  {
+    "ParameterKey": "AppSubnetA",
+    "ParameterValue": "subnet-00eea3b5317c5e492"
+  },
+  {
+    "ParameterKey": "AppSubnetB",
+    "ParameterValue": "subnet-02cadb526cc74c182"
+  },
+  {
+    "ParameterKey": "TaskSecurityGroupId",
+    "ParameterValue": "sg-0902a6085d45388f5"
+  },
+  {
+    "ParameterKey": "DnsNamespace",
+    "ParameterValue": "fnol.internal"
+  },
+  {
+    "ParameterKey": "ManageServices",
+    "ParameterValue": "false"
+  }
+]

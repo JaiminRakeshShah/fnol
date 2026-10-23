@@ -84,7 +84,7 @@ class AnalystClientTests(unittest.TestCase):
         submission = json.loads(self.export_path.read_text())
         result = evaluate(DATASET, GOLD, submission)
         failed = {row["case_id"]: row for row in result["cases"] if not row["passed"]}
-        # dev_gold.json still says standard for AUTO-D08; the extra SYSTEM field routes it manual_review.
+        # dev_gold.json still says standard for AUTO-D08; the instruction line routes it manual_review.
         self.assertEqual(set(failed), {"AUTO-D08"}, result)
         failing_checks = [name for name, ok in failed["AUTO-D08"]["checks"].items() if not ok]
         self.assertEqual(failing_checks, ["routing"])
@@ -100,8 +100,8 @@ class AnalystClientTests(unittest.TestCase):
         self.assertNotIn("SYSTEM:", blob)
         self.assertNotIn("private_token", blob)
         self.assertNotIn("SYNTHETIC-PRIVATE-", blob)
-        for path in (self.client.stores.output.path, self.client.stores.trace.path):
-            stored = path.read_bytes()
+        for store in (self.client.stores.output, self.client.stores.trace):
+            stored = store.stored_blob()
             self.assertNotIn(b"private_token", stored)
             self.assertNotIn(b"SYNTHETIC-PRIVATE-", stored)
 
@@ -112,7 +112,7 @@ class AnalystClientTests(unittest.TestCase):
         self.assertEqual(first.draft_hash, second.draft_hash)
 
     def test_trace_records_draft_and_hash_events_without_the_body(self):
-        with sqlite3.connect(self.client.stores.trace.path) as db:
+        with self.client.stores.trace.connect() as db:
             rows = list(db.execute(
                 """SELECT step, event, status, draft_id, output_sha256
                    FROM trace_events WHERE actor = 'analyst' AND case_id = 'AUTO-D01'
@@ -125,7 +125,7 @@ class AnalystClientTests(unittest.TestCase):
         self.assertEqual(recorded[3], self.client.stores.output.latest_draft("AUTO-D01").draft_id)
         self.assertEqual(recorded[4], self.client.stores.output.latest_draft("AUTO-D01").draft_hash)
         body = json.dumps(self.client.stores.output.latest_draft("AUTO-D01").draft)
-        with sqlite3.connect(self.client.stores.trace.path) as db:
+        with self.client.stores.trace.connect() as db:
             blob = " ".join(str(cell) for row in db.execute("SELECT * FROM trace_events") for cell in row)
         self.assertNotIn(body[:80], blob)
 

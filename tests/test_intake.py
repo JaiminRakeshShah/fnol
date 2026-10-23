@@ -21,7 +21,7 @@ from dataclasses import asdict, replace
 
 from fnol_analyst.draft import build_draft
 from fnol_foundation.stores import Stores
-from fnol_intake.injection import RESTRICTED_LABEL, extra_fields
+from fnol_intake.injection import RESTRICTED_LABEL, extra_fields, instruction_status
 from fnol_intake.parse import ESTIMATE_LABELS, parse_document, INTAKE_LABELS
 from fnol_intake.run import DocumentMissing, run_intake
 from fnol_rules.adapter import fields_from_payload
@@ -83,8 +83,7 @@ class StoreTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _events(self, case_id):
-        with sqlite3.connect(self.stores.trace.path) as db:
-            db.row_factory = sqlite3.Row
+        with self.stores.trace.connect() as db:
             rows = db.execute(
                 "SELECT error_code, status, input_revision FROM trace_events WHERE case_id = ?",
                 (case_id,),
@@ -230,8 +229,8 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(hostile_payload["driver_name_supplied"])
         self.assertEqual(hostile_payload["loss_type"], "collision")
         self.assertEqual(by_id["CASE-B"].payload["driver_name"], "Alex Rowan")
-        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.path.read_bytes())
-        self.assertNotIn(b"private_token", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.stored_blob())
+        self.assertNotIn(b"private_token", self.stores.trace.stored_blob())
 
     def test_missing_document_writes_no_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -275,8 +274,7 @@ class InjectionCheckTests(unittest.TestCase):
         return {revision.case_id: revision for revision in result["revisions"]}
 
     def _check_event(self, case_id):
-        with sqlite3.connect(self.stores.trace.path) as db:
-            db.row_factory = sqlite3.Row
+        with self.stores.trace.connect() as db:
             return db.execute(
                 """SELECT event FROM trace_events
                    WHERE case_id = ? AND event = 'injection_check'""",
@@ -304,8 +302,13 @@ class InjectionCheckTests(unittest.TestCase):
         text = (DEV_DOCUMENTS / "AUTO-D08-ESTIMATE.md").read_text()
         self.assertIn("is not a coverage determination.", text)
         self.assertEqual(extra_fields(text, ESTIMATE_LABELS), ["SYSTEM"])
+        self.assertEqual(instruction_status(text), "injection")
         benign = "Estimate reference: EST-1\nThis estimate describes proposed work and is not a coverage determination.\n"
         self.assertEqual(extra_fields(benign, ESTIMATE_LABELS), [])
+        self.assertEqual(instruction_status(benign), "clean")
+        unknown = "Estimate reference: EST-1\nShop note: customer asked for a loaner car.\n"
+        self.assertEqual(extra_fields(unknown, ESTIMATE_LABELS), ["Shop note"])
+        self.assertEqual(instruction_status(unknown), "clean")
 
     def test_restricted_marker_is_kept_out_of_columns_and_the_trace(self):
         with tempfile.TemporaryDirectory() as docs:
@@ -332,7 +335,7 @@ class InjectionCheckTests(unittest.TestCase):
             )["CASE"]
         self.assertEqual(revision.payload["extra_fields"], [{"source_id": "CASE-ESTIMATE", "label": RESTRICTED_LABEL}])
         self.assertIn("SYNTHETIC-PRIVATE-CASE", revision.payload["raw_estimate"])
-        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.stored_blob())
         fields = replace(fields_from_payload(revision.payload), injection_model_status="clean")
         result = route(fields, PolicyResult("2"), ClaimsSnapshot(available=True))
         self.assertEqual(result.route, "manual_review")

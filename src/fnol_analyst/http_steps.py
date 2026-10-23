@@ -1,4 +1,16 @@
-"""HTTP client for the four step servers when FNOL_STEP_TRANSPORT=http."""
+"""HTTP client for the four step servers when FNOL_STEP_TRANSPORT=http.
+
+Each step server listens on FNOL_HTTP_PORT, which defaults to 8080
+(``server/http_serve.py``). On one machine the four servers cannot share
+that port, so the client defaults below use 8081-8084. ECS does not use
+those defaults. Cloud Map gives each step its own name on port 8080, and
+the analyst task sets:
+
+  FNOL_INTAKE_URL=http://intake.fnol.internal:8080
+  FNOL_POLICY_URL=http://policy.fnol.internal:8080
+  FNOL_RULES_URL=http://rules.fnol.internal:8080
+  FNOL_CITATIONS_URL=http://citations.fnol.internal:8080
+"""
 
 from __future__ import annotations
 

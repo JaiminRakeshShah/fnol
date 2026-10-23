@@ -93,8 +93,7 @@ class RulesScreenTests(unittest.TestCase):
         )
 
     def _check_event(self, case_id):
-        with sqlite3.connect(self.stores.trace.path) as db:
-            db.row_factory = sqlite3.Row
+        with self.stores.trace.connect() as db:
             return db.execute(
                 """SELECT status, error_code, injection_field_status, injection_model_status,
                           model_id, actor
@@ -115,9 +114,9 @@ class RulesScreenTests(unittest.TestCase):
         self.assertEqual(event["actor"], "rules")
         self.assertEqual(event["injection_field_status"], "injection")
         self.assertEqual(event["injection_model_status"], "clean")
-        self.assertEqual(event["error_code"], "extra_field")
+        self.assertEqual(event["error_code"], "instruction_text")
         self.assertEqual(event["model_id"], "fake-model")
-        self.assertNotIn(b"settlement approver", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"settlement approver", self.stores.trace.stored_blob())
 
     def test_model_injection_routes_manual_review_without_rewriting_the_revision(self):
         revision = self._ingest(["AUTO-D01"])["AUTO-D01"]
@@ -137,19 +136,41 @@ class RulesScreenTests(unittest.TestCase):
 
     def test_model_timeout_and_missing_model_route_manual_review(self):
         revision = self._ingest(["AUTO-D01"])["AUTO-D01"]
-        timed = self._decide(revision, FakeModel(error=TimeoutError("timed out")))
+        model = FakeModel(error=TimeoutError("timed out"))
+        timed = self._decide(revision, model)
         self.assertEqual(timed.route, "manual_review")
+        self.assertIn("dangerous_content", timed.reasons)
+        self.assertEqual(len(model.calls), 3)
         self.assertEqual(self._check_event("AUTO-D01")["error_code"], "model_timeout")
         other = self._ingest(["AUTO-D02"])["AUTO-D02"]
         missing = self._decide(other, None)
         self.assertEqual(missing.route, "manual_review")
+        self.assertIn("dangerous_content", missing.reasons)
         self.assertEqual(self._check_event("AUTO-D02")["error_code"], "model_unavailable")
 
-    def test_non_answer_routes_manual_review(self):
+    def test_non_answer_routes_manual_review_after_three_calls(self):
         revision = self._ingest(["AUTO-D01"])["AUTO-D01"]
-        result = self._decide(revision, FakeModel("The text looks clean to me."))
+        model = FakeModel("The text looks clean to me.")
+        result = self._decide(revision, model)
         self.assertEqual(result.route, "manual_review")
+        self.assertEqual(len(model.calls), 3)
         self.assertEqual(self._check_event("AUTO-D01")["error_code"], "model_non_answer")
+
+    def test_a_clean_reply_on_the_second_call_stops_the_loop(self):
+        revision = self._ingest(["AUTO-D01"])["AUTO-D01"]
+
+        class Flaky(FakeModel):
+            def chat(self, system, user):
+                if not self.calls:
+                    self.calls.append({"system": system, "user": user})
+                    raise TimeoutError("timed out")
+                return super().chat(system, user)
+
+        model = Flaky("clean")
+        result = self._decide(revision, model)
+        self.assertEqual(len(model.calls), 2)
+        self.assertEqual(result.route, "standard")
+        self.assertEqual(result.injection_model_status, "clean")
 
     def test_model_sees_only_labels_and_leftover_lines(self):
         model = FakeModel("clean")
@@ -225,5 +246,5 @@ class RulesScreenTests(unittest.TestCase):
             )["CASE"]
         self._decide(revision, model)
         self.assertNotIn("SYNTHETIC-PRIVATE-", model.calls[0]["user"])
-        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.path.read_bytes())
-        self.assertNotIn(b"private_token", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.stored_blob())
+        self.assertNotIn(b"private_token", self.stores.trace.stored_blob())
