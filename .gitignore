@@ -5,6 +5,8 @@ submissions/
 reports/*
 !reports/score-report.json
 *.sqlite
+*.sqlite-shm
+*.sqlite-wal
 !results/aws/*.sqlite
 !.verify-state/*.sqlite
 !.verify-state_failed_calls/*.sqlite
