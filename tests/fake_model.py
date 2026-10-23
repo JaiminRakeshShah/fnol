@@ -1,4 +1,4 @@
-"""Fake injection-check models for tests: an in-process client and a Foundry-shaped HTTP endpoint."""
+"""Fake injection-check models for tests: an in-process client and a Mantle-shaped HTTP endpoint."""
 
 import json
 import os
@@ -27,8 +27,8 @@ class FakeModel:
 
 
 @contextmanager
-def fake_foundry(reply="clean"):
-    """Serve the Foundry chat route and point FNOL_MODEL_PROVIDER=azure at it."""
+def fake_mantle(reply="clean"):
+    """Serve the Mantle chat route and point FNOL_MODEL_PROVIDER=bedrock at it."""
 
     class Handler(BaseHTTPRequestHandler):
         def do_POST(self):
@@ -50,15 +50,15 @@ def fake_foundry(reply="clean"):
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
+    base = f"http://127.0.0.1:{server.server_address[1]}/openai/v1"
     env = {
-        "FNOL_MODEL_PROVIDER": "azure",
-        "FNOL_FOUNDRY_ENDPOINT": f"http://127.0.0.1:{server.server_address[1]}",
-        "FNOL_FOUNDRY_API_KEY": "test-key",
-        "FNOL_CONTENT_SAFETY_ENDPOINT": "",
+        "FNOL_MODEL_PROVIDER": "bedrock",
+        "AWS_BEARER_TOKEN_BEDROCK": "test-key",
+        "BEDROCK_MANTLE_BASE_URL": base,
     }
     try:
         with mock.patch.dict(os.environ, env):
-            yield env["FNOL_FOUNDRY_ENDPOINT"]
+            yield base
     finally:
         server.shutdown()
         server.server_close()

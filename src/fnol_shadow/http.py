@@ -1,4 +1,8 @@
-"""JSON HTTP for Bedrock. The bearer token is sent and never returned or logged."""
+"""JSON HTTP for Bedrock.
+
+A bearer token is sent only when the caller does not sign with the task role.
+The token is never returned or logged.
+"""
 
 from __future__ import annotations
 
@@ -17,6 +21,9 @@ def _default_sleeper(attempt: int) -> None:
     time.sleep(0.25 * attempt)
 
 
+Signer = Callable[[bytes | None], dict[str, str]]
+
+
 def request_json(
     url: str,
     *,
@@ -27,6 +34,7 @@ def request_json(
     timeout: float = 60,
     sleeper: Sleeper | None = None,
     max_attempts: int = MAX_ATTEMPTS,
+    signer: Signer | None = None,
 ) -> tuple[int, dict[str, str], dict]:
     """Call url. Retry transport errors, 429, and HTTP 5xx at most three times."""
     if max_attempts < 1:
@@ -41,6 +49,7 @@ def request_json(
             body=body,
             extra_headers=extra_headers,
             timeout=timeout,
+            signer=signer,
         )
         last = (status, headers, payload)
         if not _retryable(status) or attempt == max_attempts:
@@ -61,16 +70,20 @@ def _once(
     body: dict | None,
     extra_headers: dict[str, str] | None,
     timeout: float,
+    signer: Signer | None = None,
 ) -> tuple[int, dict[str, str], dict]:
     data = None if body is None else json.dumps(body).encode("utf-8")
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Accept": "application/json",
-    }
-    if data is not None:
-        headers["Content-Type"] = "application/json"
-    if extra_headers:
-        headers.update(extra_headers)
+    if signer is not None:
+        headers = signer(data)
+    else:
+        headers = {
+            "Authorization": f"Bearer {api_key}",
+            "Accept": "application/json",
+        }
+        if data is not None:
+            headers["Content-Type"] = "application/json"
+        if extra_headers:
+            headers.update(extra_headers)
     request = urllib.request.Request(url, data=data, headers=headers, method=method)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

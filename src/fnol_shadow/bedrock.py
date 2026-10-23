@@ -6,6 +6,7 @@ for this model: temperature 1.0 and top_p 0.95, so the wording is not a template
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import Callable
@@ -46,6 +47,7 @@ class MantleClient:
         timeout: float = 60,
     ):
         self.api_key = api_key
+        self.region = region
         self.model_id = model_id
         self.guardrail_id = guardrail_id or None
         self.guardrail_version = guardrail_version or None
@@ -59,25 +61,37 @@ class MantleClient:
             raise ShadowError("guardrail_config", "guardrail id and version are both required")
 
     def chat(self, system: str, user: str) -> ChatReply:
-        self._require_key()
-        status, headers, payload = request_json(
-            self.chat_url,
-            method="POST",
-            api_key=self.api_key,
-            body={
-                "model": self.model_id,
-                "temperature": 1.0,
-                "top_p": 0.95,
-                "max_tokens": 1200,
-                "messages": [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user},
-                ],
-            },
-            extra_headers=self._guardrail_headers(),
-            timeout=self.timeout,
-            sleeper=self.sleeper,
-        )
+        body = {
+            "model": self.model_id,
+            "temperature": 1.0,
+            "top_p": 0.95,
+            "max_tokens": 1200,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+        }
+        if self._use_iam():
+            status, headers, payload = request_json(
+                self.chat_url,
+                method="POST",
+                api_key="",
+                body=body,
+                timeout=self.timeout,
+                sleeper=self.sleeper,
+                signer=self._iam_signer(),
+            )
+        else:
+            self._require_key()
+            status, headers, payload = request_json(
+                self.chat_url,
+                method="POST",
+                api_key=self.api_key,
+                body=body,
+                extra_headers=self._guardrail_headers(),
+                timeout=self.timeout,
+                sleeper=self.sleeper,
+            )
         if status != 200:
             raise ShadowError("bedrock_http", f"bedrock returned {status}")
         text, finish = _message_text(payload)
@@ -88,11 +102,31 @@ class MantleClient:
             guardrail_action=_guardrail_action(headers, finish),
         )
 
+    def _use_iam(self) -> bool:
+        if os.environ.get("FNOL_BEDROCK_AUTH", "").strip().lower() == "iam":
+            return True
+        return not isinstance(self.api_key, str) or not self.api_key.strip()
+
+    def _iam_signer(self):
+        from fnol_shadow.aws_auth import sign_headers
+
+        extra = self._guardrail_headers() or {}
+
+        def signer(data: bytes | None) -> dict[str, str]:
+            headers = {"Accept": "application/json"}
+            if data is not None:
+                headers["Content-Type"] = "application/json"
+            headers.update(extra)
+            return sign_headers(self.chat_url, "POST", data, self.region, headers)
+
+        return signer
+
     def _require_key(self) -> None:
         if not isinstance(self.api_key, str) or not self.api_key.strip():
             raise ShadowError("api_key_missing", "AWS_BEARER_TOKEN_BEDROCK is required")
 
     def _guardrail_headers(self) -> dict[str, str] | None:
+        """Identifier and version only. Trace is left off so the filter text is not returned."""
         if not self.guardrail_id:
             return None
         return {

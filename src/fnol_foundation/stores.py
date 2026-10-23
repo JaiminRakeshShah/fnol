@@ -284,19 +284,12 @@ class ImmutableRecordError(ValueError):
 
 @contextmanager
 def connect(path):
-    """Open one SQLite connection, or Azure SQL when FNOL_SQL_SERVER is set.
+    """Open one SQLite connection.
 
     WAL lets readers proceed while another process writes. busy_timeout matches
     the connect timeout so multi-process step servers wait instead of failing
-    immediately under contention. Azure SQL uses the schema named after the
-    store file (input, output, trace).
+    immediately under contention.
     """
-    from fnol_foundation import azure_sql
-
-    if azure_sql.sql_enabled():
-        with azure_sql.connect(azure_sql.schema_for_path(path)) as db:
-            yield db
-        return
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     db = sqlite3.connect(path, timeout=15)
@@ -363,20 +356,7 @@ def _row_payload(row):
 
 
 def _table_names(db, table):
-    schema = getattr(db, "schema", None)
-    if schema:
-        rows = db.execute(
-            """SELECT COLUMN_NAME AS name
-               FROM INFORMATION_SCHEMA.COLUMNS
-               WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?""",
-            (schema, table),
-        ).fetchall()
-        return {row["name"] for row in rows}
     return {row["name"] for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
-
-
-def _using_azure_sql(db) -> bool:
-    return getattr(db, "schema", None) is not None
 
 
 def _add_column(db, table, name, declaration):
@@ -389,8 +369,6 @@ class InputStore:
     def __init__(self, path):
         self.path = Path(path)
         with connect(self.path) as db:
-            if _using_azure_sql(db):
-                return
             db.executescript(INPUT_SCHEMA)
             _add_column(db, "input_revisions", "trace_id", "TEXT")
             _add_column(db, "input_revisions", "repeated_fields", "TEXT")
@@ -612,8 +590,6 @@ class OutputStore:
     def __init__(self, path):
         self.path = Path(path)
         with connect(self.path) as db:
-            if _using_azure_sql(db):
-                return
             db.executescript(OUTPUT_SCHEMA)
 
     def record_draft(self, case_id, draft, input_revision=None, draft_id=None, status="recorded", created_at=None):
@@ -691,8 +667,6 @@ class TraceStore:
     def __init__(self, path):
         self.path = Path(path)
         with connect(self.path) as db:
-            if _using_azure_sql(db):
-                return
             db.executescript(TRACE_SCHEMA)
             _add_column(db, "trace_events", "event", "TEXT")
             _add_column(db, "trace_events", "prev_hash", "TEXT")

@@ -209,7 +209,7 @@ class ShadowSummaryTests(unittest.TestCase):
         text = "\n".join(
             path.read_text(encoding="utf-8")
             for path in (ROOT / "src" / "fnol_shadow").rglob("*")
-            if path.is_file()
+            if path.is_file() and path.suffix in {".py", ".md", ".json"}
         )
         self.assertNotIn("fnol_analyst", text)
         self.assertNotIn("build_draft", text)
@@ -240,18 +240,20 @@ class ShadowSummaryTests(unittest.TestCase):
         self.assertLessEqual(len(spec["blockedInputMessaging"]), 500)
         self.assertLessEqual(len(spec["blockedOutputsMessaging"]), 500)
         topics = spec["topicPolicyConfig"]["topicsConfig"]
-        self.assertGreaterEqual(len(topics), 1)
+        self.assertEqual(
+            {topic["name"] for topic in topics},
+            {"coverage-decision", "claim-denial", "claim-payment"},
+        )
         for topic in topics:
             self.assertEqual(topic["type"], "DENY")
             self.assertLessEqual(len(topic["definition"]), 200)
             self.assertLessEqual(len(topic["examples"]), 5)
             for example in topic["examples"]:
                 self.assertLessEqual(len(example), 100)
-        regex = spec["sensitiveInformationPolicyConfig"]["regexesConfig"][0]
-        self.assertIn("SYNTHETIC-PRIVATE-", regex["pattern"])
-        attack = spec["contentPolicyConfig"]["filtersConfig"][0]
-        self.assertEqual(attack["type"], "PROMPT_ATTACK")
-        self.assertEqual(attack["outputStrength"], "NONE")
+        words = {item["text"] for item in spec["wordPolicyConfig"]["wordsConfig"]}
+        self.assertEqual(words, {"private_token", "SYNTHETIC-PRIVATE-"})
+        self.assertNotIn("contentPolicyConfig", spec)
+        self.assertNotIn("sensitiveInformationPolicyConfig", spec)
 
     def test_request_uses_gemma_and_leaves_out_raw_text_and_gold(self):
         draft, record = seed(self.stores)
@@ -465,8 +467,12 @@ class ShadowSummaryTests(unittest.TestCase):
             "/prompts/pr-1/versions",
         ])
         self.assertEqual(server.requests[0]["headers"]["authorization"], "Bearer test-key-shadow")
-        self.assertIn("SYNTHETIC-PRIVATE-", json.dumps(server.requests[0]["body"]))
-        self.assertEqual(server.requests[0]["body"]["contentPolicyConfig"]["filtersConfig"][0]["type"], "PROMPT_ATTACK")
+        body = server.requests[0]["body"]
+        words = {item["text"] for item in body["wordPolicyConfig"]["wordsConfig"]}
+        topics = {item["name"] for item in body["topicPolicyConfig"]["topicsConfig"]}
+        self.assertEqual(words, {"private_token", "SYNTHETIC-PRIVATE-"})
+        self.assertEqual(topics, {"coverage-decision", "claim-denial", "claim-payment"})
+        self.assertNotIn("contentPolicyConfig", body)
         self.assertEqual(server.requests[2]["body"]["variants"][0]["modelId"], "google.gemma-4-31b")
         self.assertNotIn("modelId", server.requests[3]["body"]["variants"][0])
         self.assertIn("Your only job is the summary.", json.dumps(server.requests[3]["body"]))

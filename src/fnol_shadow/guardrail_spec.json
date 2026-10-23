@@ -1,6 +1,6 @@
 {
   "name": "fnol-shadow-summary",
-  "description": "Blocks adjudication, restricted synthetic tokens, and prompt attacks on the FNOL shadow summary.",
+  "description": "Light guardrail for the shadow narrative only. Trace is not requested on the model call.",
   "blockedInputMessaging": "The summary request was blocked.",
   "blockedOutputsMessaging": "Summary withheld: model output was not a handler summary.",
   "topicPolicyConfig": {
@@ -32,7 +32,7 @@
         "outputEnabled": true
       },
       {
-        "name": "payment-settlement-reserve",
+        "name": "claim-payment",
         "definition": "Authorizing a payment, a settlement amount, or a financial reserve.",
         "examples": [
           "We will pay the repair.",
@@ -43,54 +43,20 @@
         "outputAction": "BLOCK",
         "inputEnabled": true,
         "outputEnabled": true
-      },
+      }
+    ]
+  },
+  "wordPolicyConfig": {
+    "wordsConfig": [
       {
-        "name": "fraud-finding",
-        "definition": "Declaring that a claim, person, or referral is fraudulent or that fraud was found.",
-        "examples": [
-          "This claim is fraud.",
-          "Fraud has been confirmed."
-        ],
-        "type": "DENY",
+        "text": "private_token",
         "inputAction": "BLOCK",
         "outputAction": "BLOCK",
         "inputEnabled": true,
         "outputEnabled": true
       },
       {
-        "name": "liability-decision",
-        "definition": "Assigning legal liability or fault to a person or other party.",
-        "examples": [
-          "Liability rests with the other driver."
-        ],
-        "type": "DENY",
-        "inputAction": "BLOCK",
-        "outputAction": "BLOCK",
-        "inputEnabled": true,
-        "outputEnabled": true
-      }
-    ]
-  },
-  "contentPolicyConfig": {
-    "filtersConfig": [
-      {
-        "type": "PROMPT_ATTACK",
-        "inputStrength": "HIGH",
-        "outputStrength": "NONE",
-        "inputAction": "BLOCK",
-        "outputAction": "NONE",
-        "inputEnabled": true,
-        "outputEnabled": false
-      }
-    ]
-  },
-  "sensitiveInformationPolicyConfig": {
-    "regexesConfig": [
-      {
-        "name": "synthetic-private-token",
-        "description": "Restricted synthetic private marker",
-        "pattern": "SYNTHETIC-PRIVATE-[A-Za-z0-9-]+",
-        "action": "BLOCK",
+        "text": "SYNTHETIC-PRIVATE-",
         "inputAction": "BLOCK",
         "outputAction": "BLOCK",
         "inputEnabled": true,

@@ -17,7 +17,7 @@ sys.path.insert(0, str(ROOT / "tools"))
 sys.path.insert(0, str(ROOT / "tests"))
 
 import runtime  # noqa: E402
-from fake_model import fake_foundry  # noqa: E402
+from fake_model import fake_mantle  # noqa: E402
 from fnol_analyst.client import AnalystClient, AnalystError  # noqa: E402
 from fnol_analyst.servers import PrepareError, ServerSet  # noqa: E402
 from evaluate import evaluate  # noqa: E402
@@ -32,7 +32,7 @@ class AnalystClientTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.stack = ExitStack()
-        cls.stack.enter_context(fake_foundry("clean"))
+        cls.stack.enter_context(fake_mantle("clean"))
         cls.tmp = Path(tempfile.mkdtemp(prefix="analyst-test-"))
         cls.mock_state = cls.tmp / "mock.sqlite"
         cls.server = runtime.create_server(ROOT / "data" / "dev", cls.mock_state, port=0)

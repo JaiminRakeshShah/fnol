@@ -1,6 +1,6 @@
 # Personal Auto FNOL Triage Copilot
 
-Participant package version 1.0.0. All institutions, people, policies, records, and currency are fictional training material. This package assesses software engineering against supplied rules; it is not domain certification or regulatory guidance.
+Participant package version 1.1.0. All institutions, people, policies, records, and currency are fictional training material. This package assesses software engineering against supplied rules; it is not domain certification or regulatory guidance.
 
 Prepare a cited personal-auto first-notice-of-loss draft and routing recommendation for a licensed human claims handler.
 
@@ -48,12 +48,12 @@ In another terminal, retrieve `GET /health` and `GET /v1/cases`. Read `data/dev/
 
 `data/dev/dataset.json` is the mock's backing fixture, not a substitute for calling tools. Directly reading it from the agent bypasses the integration exercise. The assessor will use new fixtures and observe requests. Fault controls must not be read by the solution.
 
-## Azure target (optional)
+## AWS target
 
-The default path stays local SQLite and stdio. An Azure layout (Container Apps,
-Azure SQL, Blob, Foundry Gemma 4 31B) is documented in `docs/AZURE_RUNBOOK.md`
-with Bicep under `deploy/azure/`. Set the environment switches in that runbook
-only when deploying; CI and assessment do not require Azure.
+The default path stays local SQLite and stdio. The AWS layout is a private S3
+bucket, one IAM role per service, and Gemma 4 31B on Bedrock in us-east-1.
+The foundation template is `deploy/aws/foundation.yaml`. It does not create a
+database or running tasks. CI and assessment do not require AWS.
 
 ## Evaluate development outputs
 

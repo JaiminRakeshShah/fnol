@@ -59,10 +59,13 @@ class PipelineGoldTests(unittest.TestCase):
                 documents_dir=DEV_DOCUMENTS,
                 policies_dir=DEV_POLICIES,
                 state_dir_path=fnol_state.name,
-                injection_client=FakeModel("clean"),
             )
             policies = start_policy(mock_url=url, state_dir_path=fnol_state.name)
-            routes = start_routing(mock_url=url, state_dir_path=fnol_state.name)
+            routes = start_routing(
+                mock_url=url,
+                state_dir_path=fnol_state.name,
+                screen_client=FakeModel("clean"),
+            )
             by_policy = {row["case_id"]: row for row in policies["policies"]}
             by_route = {row["case_id"]: row for row in routes["routes"]}
             self.assertEqual(set(by_route), set(GOLD))

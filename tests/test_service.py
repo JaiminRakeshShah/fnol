@@ -74,7 +74,12 @@ def test_stores_canonical_claims_and_logs_attempts():
     assert decision["body"]["route"] == "standard"
     assert decision["claims_sha256"] == stored["sha256"]
     assert decision["policy_sha256"] == "policy-sha"
-    assert [row["event"] for row in events] == ["tool_read", "claims_stored", "route_decision"]
+    assert [row["event"] for row in events] == [
+        "tool_read",
+        "claims_stored",
+        "injection_check",
+        "route_decision",
+    ]
     assert events[0]["attempt"] == 1
     assert events[0]["mock_http_status"] == 200
     assert events[0]["input_revision"] == 1

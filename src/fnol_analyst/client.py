@@ -1,8 +1,10 @@
 """AnalystClient: drive the step servers, build the draft, and submit for review.
 
-Steps 1-4 are delegated to the step servers. Step 5 builds the deterministic
-narrative. Steps 6-7 optionally fill evidence_summary behind FNOL_AI_ENABLED.
-Step 8 hashes and records. Steps 9-12 live in submit.py and never call approve.
+Steps 1-4 are the platform servers. Step 5 copies their answers into the
+deterministic narrative. Step 8 hashes that package. When FNOL_AI_ENABLED=1,
+steps 6-7 call Gemma and append the shadow narrative and its safety verdict
+to the trace, keyed by draft_id. That text is not copied into the draft.
+Steps 9-12 live in submit.py and never call approve.
 """
 
 from __future__ import annotations
@@ -158,20 +160,20 @@ class AnalystClient:
             trace_id, "5", "draft_built", case_id, revision.revision, None,
             status="ok", output_sha256=digest(draft), started=started,
         )
-        if ai_enabled():
-            draft = self._fill_evidence_summary(
-                draft,
-                case_id=case_id,
-                revision=revision,
-                decisions=decisions,
-                trace_id=trace_id,
-            )
         started = time.perf_counter()
         record = self.stores.output.record_draft(case_id, draft, input_revision=revision.revision)
         self._event(
             trace_id, "8", "draft_recorded", case_id, revision.revision, record.draft_id,
             status="ok", output_sha256=record.draft_hash, started=started,
         )
+        if ai_enabled():
+            self._record_shadow(
+                case_id=case_id,
+                revision=revision,
+                decisions=decisions,
+                trace_id=trace_id,
+                draft_id=record.draft_id,
+            )
         return record
 
     def build_all(self, case_ids: list[str] | None = None) -> list[DraftRecord]:
@@ -253,22 +255,23 @@ class AnalystClient:
         except SubmitError as exc:
             raise AnalystError(exc.error_code, str(exc)) from None
 
-    def _fill_evidence_summary(
+    def _record_shadow(
         self,
-        draft: dict[str, Any],
         *,
         case_id: str,
         revision,
         decisions: dict[str, Any],
         trace_id: str,
-    ) -> dict[str, Any]:
+        draft_id: str,
+    ) -> None:
+        """Steps 6-7. The narrative is stored on the trace and not on the draft."""
         started = time.perf_counter()
         model_id = None
         input_tokens = 0
         output_tokens = 0
         candidate_hash = None
         safety = "fallback"
-        summary = None
+        stored_narrative = None
         step6_status = "error"
         step6_error = None
         try:
@@ -285,7 +288,7 @@ class AnalystClient:
             model_id = getattr(client, "model_id", self._shadow_model_id)
             settings = load_settings(self.state_dir)
             prompt_client = None
-            if settings.api_key and settings.prompt_id:
+            if settings.api_key and settings.prompt_id and not _iam_bedrock():
                 prompt_client = ControlClient(
                     api_key=settings.api_key,
                     region=settings.region,
@@ -295,9 +298,10 @@ class AnalystClient:
             verdict, narrative, input_tokens, output_tokens = _generate(
                 client, system, packet_text(packet)
             )
-            candidate_hash = digest(narrative) if narrative else None
             if verdict == "passed":
-                summary = narrative
+                assert_no_restricted(narrative)
+                stored_narrative = narrative
+                candidate_hash = digest(narrative)
                 safety = "passed"
                 step6_status = "ok"
             else:
@@ -307,6 +311,8 @@ class AnalystClient:
         except RestrictedValueError:
             step6_error = "restricted_value"
             safety = "fallback"
+            stored_narrative = None
+            candidate_hash = None
         except ShadowError as exc:
             step6_error = exc.error_code
             safety = "fallback"
@@ -320,7 +326,7 @@ class AnalystClient:
             "shadow_summary",
             case_id,
             revision.revision,
-            None,
+            draft_id,
             status=step6_status,
             error_code=step6_error,
             started=started,
@@ -335,31 +341,28 @@ class AnalystClient:
             "safety_scan",
             case_id,
             revision.revision,
-            None,
+            draft_id,
             status="ok" if safety == "passed" else "error",
             error_code=None if safety == "passed" else safety,
+            started=started,
+            model_id=model_id,
+            input_tokens=input_tokens,
+            output_tokens=output_tokens,
             shadow_safety_status=safety,
+            shadow_narrative=stored_narrative,
         )
-        draft = dict(draft)
-        draft["evidence_summary"] = summary
-        draft["safety_status"] = safety
-        return draft
 
     def _mantle_client(self):
         if self._shadow_chat is not None:
             return _StubMantle(self._shadow_chat, self._shadow_model_id)
-        provider = os.environ.get("FNOL_MODEL_PROVIDER", "").strip().lower()
-        if provider == "azure":
-            from fnol_shadow.foundry import load_foundry_client
-
-            return load_foundry_client()
         settings = load_settings(self.state_dir)
-        if not settings.api_key:
+        use_iam = _iam_bedrock()
+        if not settings.api_key and not use_iam:
             raise ShadowError("api_key_missing", "AWS_BEARER_TOKEN_BEDROCK is required")
         from fnol_shadow.bedrock import MantleClient
 
         return MantleClient(
-            api_key=settings.api_key,
+            api_key="" if use_iam else settings.api_key,
             region=settings.region,
             model_id=settings.model_id,
             guardrail_id=settings.guardrail_id,
@@ -403,6 +406,7 @@ class AnalystClient:
         input_tokens=None,
         output_tokens=None,
         shadow_safety_status=None,
+        shadow_narrative=None,
         mock_http_status=None,
     ):
         if duration_ms is None and started is not None:
@@ -424,8 +428,13 @@ class AnalystClient:
             input_tokens=input_tokens,
             output_tokens=output_tokens,
             shadow_safety_status=shadow_safety_status,
+            shadow_narrative=shadow_narrative,
             mock_http_status=mock_http_status,
         )
+
+
+def _iam_bedrock() -> bool:
+    return os.environ.get("FNOL_BEDROCK_AUTH", "").strip().lower() == "iam"
 
 
 class _StubMantle:

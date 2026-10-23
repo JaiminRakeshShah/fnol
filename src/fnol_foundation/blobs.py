@@ -1,7 +1,7 @@
-"""Read case documents and policy wording from disk or Azure Blob Storage.
+"""Read case documents and policy wording from disk or S3.
 
-Disk is the default. Set FNOL_BLOB_ACCOUNT to read from Blob instead.
-Containers default to case-documents and policy-wording; override with
+Disk is the default. Set FNOL_S3_BUCKET to read from S3.
+Prefixes default to case-documents and policy-wording; override with
 FNOL_DOCUMENTS_CONTAINER and FNOL_POLICIES_CONTAINER.
 """
 
@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any
 
 
 class BlobError(RuntimeError):
@@ -18,8 +17,19 @@ class BlobError(RuntimeError):
         self.error_code = error_code
 
 
-def blob_enabled() -> bool:
-    return bool(os.environ.get("FNOL_BLOB_ACCOUNT", "").strip())
+def s3_enabled() -> bool:
+    return object_store() == "s3"
+
+
+def s3_bucket() -> str:
+    return os.environ.get("FNOL_S3_BUCKET", "").strip()
+
+
+def object_store() -> str:
+    """Which file store is active: s3 or disk."""
+    if os.environ.get("FNOL_S3_BUCKET", "").strip():
+        return "s3"
+    return "disk"
 
 
 def documents_container() -> str:
@@ -35,7 +45,7 @@ def fixtures_container() -> str:
 
 
 def container_for(directory: str | Path) -> str:
-    """Map a local directory path to the Blob container used in Azure mode."""
+    """Map a local directory path to the S3 prefix."""
     name = Path(directory).name.lower()
     if name in {"documents", "case-documents"}:
         return documents_container()
@@ -56,8 +66,8 @@ def read_source(directory: str | Path, source_id: str):
     if any(part in source_id for part in ("/", "\\", "..")):
         return None
     blob_name = f"{source_id}.md"
-    if blob_enabled():
-        return _read_blob(container_for(directory), blob_name)
+    if object_store() == "s3":
+        return _read_s3(container_for(directory), blob_name)
     root = Path(directory).resolve()
     path = (root / blob_name).resolve()
     if path.parent != root or not path.is_file():
@@ -74,8 +84,8 @@ def list_markdown_sources(directory: str | Path) -> list[dict[str, str]]:
     """Return ``[{source_id, sha256}, ...]`` for every ``*.md`` in the store."""
     from fnol_intake.parse import file_sha256
 
-    if blob_enabled():
-        return _list_blob_markdown(container_for(directory))
+    if object_store() == "s3":
+        return _list_s3_markdown(container_for(directory))
     root = Path(directory)
     if not root.is_dir():
         raise FileNotFoundError(f"policies directory does not exist: {directory}")
@@ -88,68 +98,36 @@ def list_markdown_sources(directory: str | Path) -> list[dict[str, str]]:
     return sources
 
 
-def _client():
-    account = os.environ.get("FNOL_BLOB_ACCOUNT", "").strip()
-    if not account:
-        raise BlobError("blob_config", "FNOL_BLOB_ACCOUNT is required")
-    try:
-        from azure.identity import DefaultAzureCredential
-        from azure.storage.blob import BlobServiceClient
-    except ImportError as exc:
-        raise BlobError(
-            "blob_deps",
-            "azure-storage-blob and azure-identity are required for Blob mode",
-        ) from exc
-    url = f"https://{account}.blob.core.windows.net"
-    credential = DefaultAzureCredential()
-    return BlobServiceClient(account_url=url, credential=credential)
+def _read_s3(prefix: str, name: str):
+    from fnol_foundation.s3store import get_object_bytes
 
-
-def _read_blob(container: str, blob_name: str):
+    bucket = s3_bucket()
+    key = f"{prefix}/{name}"
     try:
-        client = _client()
-        blob = client.get_blob_client(container=container, blob=blob_name)
-        if not blob.exists():
-            return None
-        data = blob.download_blob().readall()
+        data = get_object_bytes(bucket, key)
     except BlobError:
         raise
-    except Exception as exc:
-        raise BlobError("blob_read", f"failed to read {container}/{blob_name}: {exc}") from exc
+    if data is None:
+        return None
     try:
         text = data.decode("utf-8")
     except UnicodeDecodeError:
         return None
-    uri = f"azure-blob://{container}/{blob_name}"
-    return uri, data, text
+    return f"s3://{bucket}/{key}", data, text
 
 
-def _list_blob_markdown(container: str) -> list[dict[str, str]]:
+def _list_s3_markdown(prefix: str) -> list[dict[str, str]]:
+    from fnol_foundation.s3store import get_object_bytes, list_keys
     from fnol_intake.parse import file_sha256
 
-    try:
-        client = _client()
-        container_client = client.get_container_client(container)
-        items: list[dict[str, str]] = []
-        for blob in sorted(container_client.list_blobs(), key=lambda b: b.name):
-            name = blob.name
-            if not name.endswith(".md") or "/" in name.rstrip("/"):
-                continue
-            data = container_client.download_blob(name).readall()
-            items.append({
-                "source_id": Path(name).stem,
-                "sha256": file_sha256(data),
-            })
-        return items
-    except BlobError:
-        raise
-    except Exception as exc:
-        raise BlobError("blob_list", f"failed to list {container}: {exc}") from exc
-
-
-def download_text(container: str, blob_name: str) -> str | None:
-    """Fetch one blob as UTF-8 text, or None when missing."""
-    found = _read_blob(container, blob_name) if blob_enabled() else None
-    if found is None:
-        return None
-    return found[2]
+    bucket = s3_bucket()
+    items: list[dict[str, str]] = []
+    for key in list_keys(bucket, prefix):
+        name = key.rsplit("/", 1)[-1]
+        if not name.endswith(".md") or "/" in name:
+            continue
+        data = get_object_bytes(bucket, key)
+        if data is None:
+            continue
+        items.append({"source_id": Path(name).stem, "sha256": file_sha256(data)})
+    return items

@@ -39,7 +39,7 @@ def file_sha256(data):
 def read_source(directory, source_id):
     """Return (path, bytes, text) for a source file inside directory, or None.
 
-    Uses Azure Blob when FNOL_BLOB_ACCOUNT is set; otherwise reads the local disk.
+    Uses S3 or Azure Blob when configured; otherwise reads the local disk.
     """
     from fnol_foundation.blobs import read_source as _read
 
@@ -126,7 +126,7 @@ def load_procedures(policies_dir):
 
     The stored record is the id and hash. Policy wording is not copied into the
     revision because the intake procedure names the restricted field marker.
-    Uses Azure Blob when FNOL_BLOB_ACCOUNT is set.
+    Uses S3 when FNOL_S3_BUCKET is set.
     """
     from fnol_foundation.blobs import list_markdown_sources
 

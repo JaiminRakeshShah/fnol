@@ -157,38 +157,42 @@ class AiGateTests(unittest.TestCase):
         second = client.build("AUTO-D01")
         self.assertEqual(second.draft_id, record.draft_id)
 
-    def test_ai_on_passing_summary_enters_hash(self):
+    def test_ai_on_passing_summary_stays_out_of_the_hash(self):
         stores = Stores(self.state)
         _seed_case(stores)
         with mock.patch.dict(os.environ, {"FNOL_AI_ENABLED": "1"}, clear=False):
             client = self._client(shadow_chat=self._chat(GOOD_SUMMARY), shadow_model_id="gemma-test")
             record = client.build("AUTO-D01")
-        self.assertEqual(record.draft["evidence_summary"], GOOD_SUMMARY)
-        self.assertEqual(record.draft["safety_status"], "passed")
+        self.assertIsNone(record.draft["evidence_summary"])
+        self.assertEqual(record.draft["safety_status"], "skipped")
+        self.assertNotIn(GOOD_SUMMARY[:40], json.dumps(record.draft))
         self.assertEqual(record.draft_hash, digest(record.draft))
         self.assertEqual(len(self.calls), 1)
         self.assertNotIn("RAW FILE TEXT", self.calls[0][1])
         with sqlite3.connect(stores.trace.path) as db:
             rows = list(db.execute(
                 """SELECT step, event, model_id, input_tokens, output_tokens,
-                          shadow_narrative, shadow_safety_status, output_sha256
+                          shadow_narrative, shadow_safety_status, output_sha256, draft_id
                    FROM trace_events WHERE actor='analyst' ORDER BY rowid"""
             ))
         steps = [row[0] for row in rows]
-        self.assertEqual(steps, ["5", "6", "7", "8"])
-        step6 = rows[1]
+        self.assertEqual(steps, ["5", "8", "6", "7"])
+        step6 = rows[2]
         self.assertEqual(step6[1], "shadow_summary")
         self.assertEqual(step6[2], "gemma-test")
         self.assertEqual(step6[3], 11)
         self.assertEqual(step6[4], 22)
         self.assertIsNone(step6[5])
         self.assertEqual(step6[7], digest(GOOD_SUMMARY))
-        step7 = rows[2]
+        self.assertEqual(step6[8], record.draft_id)
+        step7 = rows[3]
         self.assertEqual(step7[1], "safety_scan")
+        self.assertEqual(step7[5], GOOD_SUMMARY)
         self.assertEqual(step7[6], "passed")
+        self.assertEqual(step7[8], record.draft_id)
         blob = " ".join(str(cell) for row in rows for cell in row)
-        self.assertNotIn(GOOD_SUMMARY[:40], blob)
         self.assertNotIn("RAW FILE TEXT", blob)
+        self.assertNotIn(self.calls[0][0][:40], blob)
 
     def test_ai_on_blocked_falls_back_and_keeps_narrative(self):
         stores = Stores(self.state)
@@ -197,9 +201,10 @@ class AiGateTests(unittest.TestCase):
             client = self._client(shadow_chat=self._chat(BAD_SUMMARY))
             record = client.build("AUTO-D01")
         self.assertIsNone(record.draft["evidence_summary"])
-        self.assertEqual(record.draft["safety_status"], "fallback")
+        self.assertEqual(record.draft["safety_status"], "skipped")
         self.assertIn("Draft FNOL for the human handler", record.draft["narrative"])
         self.assertNotIn("Coverage is approved", record.draft["narrative"])
+        self.assertNotIn(b"Coverage is approved", stores.trace.path.read_bytes())
         self.assertEqual(record.status, "recorded")
 
     def test_ai_on_model_error_falls_back(self):
@@ -215,7 +220,7 @@ class AiGateTests(unittest.TestCase):
             record = client.build("AUTO-D01")
         self.assertEqual(len(self.calls), 1)
         self.assertIsNone(record.draft["evidence_summary"])
-        self.assertEqual(record.draft["safety_status"], "fallback")
+        self.assertEqual(record.draft["safety_status"], "skipped")
 
     def test_second_build_does_not_call_model(self):
         stores = Stores(self.state)

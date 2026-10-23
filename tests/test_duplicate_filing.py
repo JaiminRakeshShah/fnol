@@ -73,10 +73,13 @@ class DuplicateFilingTests(unittest.TestCase):
                 documents_dir=DEV_DOCUMENTS,
                 policies_dir=DEV_POLICIES,
                 state_dir_path=fnol_state.name,
-                injection_client=FakeModel("clean"),
             )
             start_policy(mock_url=url, state_dir_path=fnol_state.name)
-            routes = start_routing(mock_url=url, state_dir_path=fnol_state.name)
+            routes = start_routing(
+                mock_url=url,
+                state_dir_path=fnol_state.name,
+                screen_client=FakeModel("clean"),
+            )
             by_route = {row["case_id"]: row for row in routes["routes"]}
             self.assertEqual(by_route["AUTO-D09"]["route"], "standard")
             self.assertEqual(by_route["AUTO-D10"]["route"], "standard")
