@@ -64,7 +64,7 @@ flowchart TB
 
 Fargate cluster `fnol` runs seven services in `fnol-private-a` (`subnet-00eea3b5317c5e492`, 10.43.11.0/24) and `fnol-private-b` (`subnet-02cadb526cc74c182`, 10.43.12.0/24). `assignPublicIp` is disabled. Both subnets send their default route to NAT `nat-0563fc6ab85404d39`. There is no load balancer and there are no VPC endpoints.
 
-Tasks share security group `fnol-tasks` (`sg-0902a6085d45388f5`). Its self-referencing ingress is 8080, 8767, and 8090. Task roles are `arn:aws:iam::104005345381:role/fnol/fnol-<service>`. The execution role is `role/fnol/fnol-execution`. Images come from `104005345381.dkr.ecr.us-east-1.amazonaws.com/fnol`. Logs are `/fnol/<service>`. The running image tag is `1.1.2` at 256 CPU and 512 MB. No ECS `secrets` are set.
+Tasks share security group `fnol-tasks` (`sg-0902a6085d45388f5`). Its self-referencing ingress is 8080, 8767, and 8090. Egress today is TCP 8080, 8767, and 8090 to itself, TCP 443 to the internet, and TCP 2049 for EFS. There is no 5432 rule, so tasks cannot open a database connection until the data stack adds one. Task roles are `arn:aws:iam::104005345381:role/fnol/fnol-<service>`. The execution role is `role/fnol/fnol-execution`. Images come from `104005345381.dkr.ecr.us-east-1.amazonaws.com/fnol`. Logs are `/fnol/<service>`. The running image tag is `1.1.2` at 256 CPU and 512 MB. No ECS `secrets` are set.
 
 Cloud Map private DNS namespace `fnol.internal` has `intake`, `policy`, `rules`, `citations`, `enterprise`, and `reviewer`. Analyst is not registered. Analyst runs `sleep infinity` so an operator can exec in, with `FNOL_STEP_TRANSPORT=http` and the step URLs pointed at Cloud Map.
 
@@ -79,12 +79,10 @@ Foundation outputs already in use: bucket `fnol-104005345381-evidence`, KMS key 
 ## Stacks
 
 1. `foundation.yaml` — already deployed. This change adds log group `/fnol/migrate` and lets the execution role write to it. That update does not replace running tasks.
-2. `data.yaml` — DB subnet group `fnol-postgres` on the two db subnets, security group `fnol-postgres` allowing TCP 5432 only from `fnol-tasks`, and RDS PostgreSQL `fnol-postgres`. Private, KMS-encrypted, IAM auth on, managed master secret, deletion protection on, backups at least 7 days. `MultiAZ` defaults off. `CreateVpcEndpoints` defaults off because the NAT is already there.
+2. `data.yaml` — DB subnet group `fnol-postgres` on the two db subnets, security group `fnol-postgres` allowing TCP 5432 only from `fnol-tasks`, one egress rule on `fnol-tasks` for TCP 5432 to that security group, and RDS PostgreSQL `fnol-postgres`. Private, KMS-encrypted, IAM auth on, managed master secret, deletion protection on, backups at least 7 days. `MultiAZ` defaults off. `CreateVpcEndpoints` defaults off because the NAT is already there. The egress rule is a standalone `AWS::EC2::SecurityGroupEgress`, so the existing 8080, 8767, 8090, 443, and 2049 rules stay. Deleting the data stack removes only that 5432 rule.
 3. `services.yaml` — task definitions `fnol-<service>` plus `fnol-migrate`. `ManageServices` defaults to false, so the stack registers revisions and does not create or update the live services.
 
 Live defaults are the template defaults and `deploy/aws/params/live-data.json`. Pass `PermissionsBoundaryArn` from the foundation `TaskBoundaryArn` output so `fnol-migrate` sits under the same ceiling as the task roles.
-
-Before the data stack, confirm `fnol-tasks` egress allows TCP 5432 toward the new database security group. A security group that still has the default allow-all egress already does. This template does not edit `fnol-tasks`.
 
 `EngineVersion` defaults to `16.8`. Confirm that minor is still offered before the first deploy.
 
@@ -102,7 +100,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-2. Deploy PostgreSQL. This does not replace instance `fnol`.
+2. Deploy PostgreSQL. This does not replace instance `fnol`. The same deploy adds egress TCP 5432 on `fnol-tasks` (`sg-0902a6085d45388f5`) to security group `fnol-postgres` only. No separate security-group edit is required before the migrate task.
 
 ```sh
 BOUNDARY=$(aws cloudformation describe-stacks --region us-east-1 \
@@ -243,4 +241,3 @@ CI sets `FNOL_PG_NAMESPACE=isolate` so each test directory gets its own schemas 
 - Whether CloudFormation should import the ECS services after the rollout matches `services.yaml`. The default leaves the services under the CLI.
 - The image tag to publish. `1.1.2` cannot run the Postgres command.
 - The live desired count, if you import. The template default is 1.
-- Confirm `fnol-tasks` egress allows TCP 5432 before the data stack is used.

@@ -5,7 +5,9 @@ Description: >
   instance named fnol. It creates a DB subnet group on the fnol-db subnets,
   a security group that allows 5432 only from the task security group, and a
   private encrypted Postgres instance with IAM authentication and a managed
-  master secret. VPC endpoints stay off unless CreateVpcEndpoints is true.
+  master secret. It adds one egress rule on the existing task security group:
+  TCP 5432 to that Postgres security group only. VPC endpoints stay off unless
+  CreateVpcEndpoints is true.
 
 Parameters:
   EvidenceKeyArn:
@@ -35,7 +37,7 @@ Parameters:
     Type: String
     Default: sg-0902a6085d45388f5
     AllowedPattern: "sg-[0-9a-f]+"
-    Description: Existing fnol-tasks security group. Ingress 5432 is allowed only from this group.
+    Description: Existing fnol-tasks security group. Ingress 5432 is allowed only from this group, and this stack adds egress 5432 from it to the Postgres security group.
   VpcCidr:
     Type: String
     Default: 10.43.0.0/16
@@ -149,6 +151,16 @@ Resources:
       Tags:
         - Key: Name
           Value: fnol-postgres
+
+  TaskPostgresEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref TaskSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 5432
+      ToPort: 5432
+      DestinationSecurityGroupId: !Ref DatabaseSecurityGroup
+      Description: TCP 5432 to FNOL Postgres only
 
   EndpointSecurityGroup:
     Type: AWS::EC2::SecurityGroup

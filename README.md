@@ -62,6 +62,9 @@ under `fnol.internal`. Step servers listen on port 8080. Those names are
 `http://rules.fnol.internal:8080`, and `http://citations.fnol.internal:8080`.
 The 8081–8084 defaults are only for four local processes on one machine.
 Enterprise listens on 8767 and the reviewer on 8090. There is no load balancer.
+`fnol-tasks` allows egress on those service ports to itself, on 443, and on
+2049 for EFS. `deploy/aws/data.yaml` adds TCP 5432 from that group to the
+Postgres security group only, which is what lets the tasks reach the database.
 Evidence stays in the private S3 bucket encrypted with the foundation KMS key.
 Rules and the analyst call Gemma 4 31B on Bedrock. Logs go to CloudWatch.
 

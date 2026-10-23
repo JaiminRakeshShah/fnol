@@ -44,6 +44,9 @@ class DataTemplateTests(unittest.TestCase):
         self.assertIn('Default: "false"', DATA)
         self.assertIn("FromPort: 5432", DATA)
         self.assertIn("SourceSecurityGroupId: !Ref TaskSecurityGroupId", DATA)
+        self.assertIn("Type: AWS::EC2::SecurityGroupEgress", DATA)
+        self.assertIn("GroupId: !Ref TaskSecurityGroupId", DATA)
+        self.assertIn("DestinationSecurityGroupId: !Ref DatabaseSecurityGroup", DATA)
 
     def test_services_match_the_live_tasks_and_add_rds_users(self):
         for family in (
