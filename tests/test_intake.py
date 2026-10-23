@@ -83,8 +83,7 @@ class StoreTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def _events(self, case_id):
-        with sqlite3.connect(self.stores.trace.path) as db:
-            db.row_factory = sqlite3.Row
+        with self.stores.trace.connect() as db:
             rows = db.execute(
                 "SELECT error_code, status, input_revision FROM trace_events WHERE case_id = ?",
                 (case_id,),
@@ -230,8 +229,8 @@ class StoreTests(unittest.TestCase):
         self.assertFalse(hostile_payload["driver_name_supplied"])
         self.assertEqual(hostile_payload["loss_type"], "collision")
         self.assertEqual(by_id["CASE-B"].payload["driver_name"], "Alex Rowan")
-        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.path.read_bytes())
-        self.assertNotIn(b"private_token", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.stored_blob())
+        self.assertNotIn(b"private_token", self.stores.trace.stored_blob())
 
     def test_missing_document_writes_no_revision(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -275,8 +274,7 @@ class InjectionCheckTests(unittest.TestCase):
         return {revision.case_id: revision for revision in result["revisions"]}
 
     def _check_event(self, case_id):
-        with sqlite3.connect(self.stores.trace.path) as db:
-            db.row_factory = sqlite3.Row
+        with self.stores.trace.connect() as db:
             return db.execute(
                 """SELECT event FROM trace_events
                    WHERE case_id = ? AND event = 'injection_check'""",
@@ -337,7 +335,7 @@ class InjectionCheckTests(unittest.TestCase):
             )["CASE"]
         self.assertEqual(revision.payload["extra_fields"], [{"source_id": "CASE-ESTIMATE", "label": RESTRICTED_LABEL}])
         self.assertIn("SYNTHETIC-PRIVATE-CASE", revision.payload["raw_estimate"])
-        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.stored_blob())
         fields = replace(fields_from_payload(revision.payload), injection_model_status="clean")
         result = route(fields, PolicyResult("2"), ClaimsSnapshot(available=True))
         self.assertEqual(result.route, "manual_review")

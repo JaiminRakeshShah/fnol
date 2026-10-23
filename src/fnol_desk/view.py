@@ -16,8 +16,9 @@ from fnol_analyst.draft import (
     REASON_TEXT,
     _content_check_notes,
 )
-from fnol_foundation.stores import DraftRecord, Stores, connect
+from fnol_foundation.stores import DraftRecord, Stores
 from tools.runtime import connect as mock_connect
+from tools.runtime import mock_state_present
 
 ROOT = Path(__file__).resolve().parents[2]
 
@@ -141,7 +142,7 @@ def _short_hash(full: str | None) -> str:
 
 
 def _review_for_case(mock_state: Path, case_id: str, draft_hash: str | None) -> dict[str, Any] | None:
-    if not mock_state.exists():
+    if not mock_state_present(mock_state):
         return None
     with mock_connect(mock_state) as db:
         # Prefer a pending review matching this draft hash; else latest for the case.
@@ -165,7 +166,7 @@ def _review_for_case(mock_state: Path, case_id: str, draft_hash: str | None) -> 
 
 def _list_draft_rows(stores: Stores) -> list[DraftRecord]:
     """Latest draft per case, newest cases first."""
-    with connect(stores.output.path) as db:
+    with stores.output.connect() as db:
         rows = db.execute(
             """SELECT d.* FROM drafts d
                INNER JOIN (
@@ -454,7 +455,7 @@ def _summary_empty_reason(evidence_summary: Any, safety_status: str) -> str | No
 
 def list_audit(*, mock_state: Path | None = None, limit: int = 200) -> list[dict[str, Any]]:
     mock_state = Path(mock_state) if mock_state is not None else default_mock_state()
-    if not mock_state.exists():
+    if not mock_state_present(mock_state):
         return []
     with mock_connect(mock_state) as db:
         rows = db.execute(

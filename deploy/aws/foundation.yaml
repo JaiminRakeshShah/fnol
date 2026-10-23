@@ -1,8 +1,9 @@
 AWSTemplateFormatVersion: "2010-09-09"
 Description: >
   FNOL foundation in us-east-1. One private evidence bucket, one KMS key,
-  and a separate task role per service. This stack does not create a database,
-  a NAT gateway, VPC endpoints, or running tasks.
+  and a separate task role per service. This stack does not create a NAT
+  gateway or running tasks. The Postgres database is deploy/aws/data.yaml
+  and encrypts with this key.
 Metadata:
   AWSToolsMetrics:
     AWSAgentToolkit: aws-cloudformation@3
@@ -12,7 +13,7 @@ Metadata:
       - "deploy only in us-east-1"
       - "task roles cannot call iam or assume another role"
       - "task roles cannot write or delete evidence objects"
-      - "this stack creates no RDS, NAT, interface endpoint, or ECS service"
+      - "this stack creates no NAT or ECS service; RDS is deploy/aws/data.yaml"
     owner: "fnol platform"
 Rules:
   MustBeUsEast1:
@@ -75,6 +76,7 @@ Resources:
         must:
           - "retain on stack delete"
           - "logs service may use it only for /fnol log groups in this account"
+          - "RDS and Secrets Manager in this account may use it for the FNOL database"
         mutable: must-never-change
     Properties:
       Description: FNOL evidence and log encryption
@@ -104,6 +106,38 @@ Resources:
                 aws:SourceAccount: !Ref AWS::AccountId
               ArnLike:
                 kms:EncryptionContext:aws:logs:arn: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/fnol/*
+          - Sid: AllowRdsInAccount
+            Effect: Allow
+            Principal:
+              AWS: "*"
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:CreateGrant
+              - kms:ListGrants
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                kms:CallerAccount: !Ref AWS::AccountId
+                kms:ViaService: !Sub rds.${AWS::Region}.amazonaws.com
+          - Sid: AllowSecretsManager
+            Effect: Allow
+            Principal:
+              Service: secretsmanager.amazonaws.com
+            Action:
+              - kms:Encrypt
+              - kms:Decrypt
+              - kms:ReEncrypt*
+              - kms:GenerateDataKey*
+              - kms:CreateGrant
+              - kms:DescribeKey
+            Resource: "*"
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
 
   EvidenceKeyAlias:
     Type: AWS::KMS::Alias
@@ -592,6 +626,8 @@ Resources:
           Cluster: !Ref ClusterName
 
 Outputs:
+  TaskBoundaryArn:
+    Value: !Ref TaskBoundary
   BucketName:
     Value: !Ref EvidenceBucket
   BucketArn:

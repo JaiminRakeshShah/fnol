@@ -7,7 +7,7 @@ Prepare a cited personal-auto first-notice-of-loss draft and routing recommendat
 ## Start here
 
 Read `BRIEF.md`, `docs/POLICY_GUIDE.md`, `docs/API.md`, `docs/OUTPUT_CONTRACT.md`, and `docs/ASSESSMENT.md`.
-Use one isolated copy and mock state database per team. The package has no third-party Python dependencies. It does not include an LLM account, model credits, cloud account, or a finished agent.
+Use one isolated copy and mock state database per team. The default path has no required third-party Python dependencies. PostgreSQL needs the `postgres` group (`psycopg`). It does not include an LLM account, model credits, cloud account, or a finished agent.
 
 ### Team default: Dev Container
 
@@ -50,10 +50,17 @@ In another terminal, retrieve `GET /health` and `GET /v1/cases`. Read `data/dev/
 
 ## AWS target
 
-The default path stays local SQLite and stdio. The AWS layout is a private S3
-bucket, one IAM role per service, and Gemma 4 31B on Bedrock in us-east-1.
-The foundation template is `deploy/aws/foundation.yaml`. It does not create a
-database or running tasks. CI and assessment do not require AWS.
+The default path stays local SQLite and stdio. Set `FNOL_DATABASE_URL` to use
+PostgreSQL instead. Docker Compose starts Postgres and points the mock at it.
+The AWS layout is a private S3 bucket, one IAM role per service, Gemma 4 31B
+on Bedrock in us-east-1, and a private RDS PostgreSQL instance. Evidence files
+stay in S3. Intake reads them from S3 and writes revisions into Postgres.
+There is no import of old SQLite files.
+
+`deploy/aws/foundation.yaml` creates the bucket, KMS key, and task roles.
+`deploy/aws/data.yaml` creates the VPC, private subnets, and the database.
+See `deploy/aws/README.md` for deploy and migrate steps. CI runs the suite on
+SQLite and again on Postgres. Assessment does not require an AWS account.
 
 ## Evaluate development outputs
 

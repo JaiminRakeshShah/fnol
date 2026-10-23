@@ -20,7 +20,7 @@ class ReviewerHttpTests(unittest.TestCase):
         self.state = Path(self.tmp.name) / "mock.sqlite"
         with connect(self.state) as db:
             db.execute(
-                "INSERT INTO reviews VALUES(?,?,?,?,?,?)",
+                "INSERT INTO reviews (id, case_id, draft, hash, status, reviewer) VALUES (?,?,?,?,?,?)",
                 ("rev_1", "AUTO-D01", "{}", "abc", "pending", None),
             )
         self.server = create_server(host="127.0.0.1", port=0, state=self.state)

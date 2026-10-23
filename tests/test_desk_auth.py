@@ -136,7 +136,7 @@ class DeskAuthUnitTests(unittest.TestCase):
         record, draft = _seed_case(self.stores)
         with mock_connect(self.mock_state) as db:
             db.execute(
-                "INSERT INTO reviews VALUES(?,?,?,?,?,?)",
+                "INSERT INTO reviews (id, case_id, draft, hash, status, reviewer) VALUES (?,?,?,?,?,?)",
                 ("rev_1", "AUTO-D01", canonical(draft), record.draft_hash, "pending", None),
             )
         analyst, _ = login("jellis", "analyst-desk", path=self.auth_path)
@@ -150,7 +150,7 @@ class DeskAuthUnitTests(unittest.TestCase):
         record, draft = _seed_case(self.stores)
         with mock_connect(self.mock_state) as db:
             db.execute(
-                "INSERT INTO reviews VALUES(?,?,?,?,?,?)",
+                "INSERT INTO reviews (id, case_id, draft, hash, status, reviewer) VALUES (?,?,?,?,?,?)",
                 ("rev_ok", "AUTO-D01", canonical(draft), record.draft_hash, "pending", None),
             )
         handler, _ = login("achen", "handler-desk", path=self.auth_path)
@@ -166,7 +166,7 @@ class DeskAuthUnitTests(unittest.TestCase):
         record, draft = _seed_case(self.stores)
         with mock_connect(self.mock_state) as db:
             db.execute(
-                "INSERT INTO reviews VALUES(?,?,?,?,?,?)",
+                "INSERT INTO reviews (id, case_id, draft, hash, status, reviewer) VALUES (?,?,?,?,?,?)",
                 ("rev_rej", "AUTO-D01", canonical(draft), record.draft_hash, "pending", None),
             )
         handler, _ = login("achen", "handler-desk", path=self.auth_path)
@@ -192,7 +192,7 @@ class DeskAuthUnitTests(unittest.TestCase):
         record, _draft = _seed_case(self.stores)
         with mock_connect(self.mock_state) as db:
             db.execute(
-                "INSERT INTO reviews VALUES(?,?,?,?,?,?)",
+                "INSERT INTO reviews (id, case_id, draft, hash, status, reviewer) VALUES (?,?,?,?,?,?)",
                 ("rev_bad", "AUTO-D01", "{}", "deadbeef", "pending", None),
             )
         handler, _ = login("achen", "handler-desk", path=self.auth_path)
@@ -215,7 +215,7 @@ class DeskAuthUnitTests(unittest.TestCase):
         )
         with mock_connect(self.mock_state) as db:
             db.execute(
-                "INSERT INTO reviews VALUES(?,?,?,?,?,?)",
+                "INSERT INTO reviews (id, case_id, draft, hash, status, reviewer) VALUES (?,?,?,?,?,?)",
                 ("rev_view", "AUTO-D01", canonical(draft), record.draft_hash, "pending", None),
             )
         handler_view = case_view(

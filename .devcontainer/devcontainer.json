@@ -30,6 +30,6 @@
   },
   "remoteUser": "vscode",
   "containerEnv": {
-    "AI_ENABLED": "false"
+    "FNOL_AI_ENABLED": "false"
   }
 }

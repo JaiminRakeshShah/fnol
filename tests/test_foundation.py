@@ -1,4 +1,4 @@
-"""Acceptance checks for the SQLite input, output, and trace files."""
+"""Acceptance checks for the input, output, and trace stores."""
 
 import sqlite3
 import sys
@@ -12,6 +12,7 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from fnol_foundation import RestrictedValueError, Stores, TRACE_COLUMNS, canonical, digest
 from fnol_foundation.canonical import redact_for_store
+from fnol_foundation.db import IntegrityError
 from fnol_foundation.stores import ImmutableRecordError
 from tools.runtime import canonical as mock_canonical
 from tools.runtime import digest as mock_digest
@@ -34,12 +35,23 @@ class StoreTests(unittest.TestCase):
         self.tmp.cleanup()
 
     def test_creates_the_three_sqlite_files(self):
+        if self.stores.backend == "postgres":
+            for store, table in (
+                (self.stores.input, "input_revisions"),
+                (self.stores.output, "drafts"),
+                (self.stores.trace, "trace_events"),
+            ):
+                with store.connect() as db:
+                    db.execute(f"SELECT 1 FROM {table}")
+            return
         directory = Path(self.tmp.name)
         self.assertTrue((directory / "input.sqlite").is_file())
         self.assertTrue((directory / "output.sqlite").is_file())
         self.assertTrue((directory / "trace.sqlite").is_file())
 
     def test_sqlite_uses_wal(self):
+        if self.stores.backend != "sqlite":
+            self.skipTest("WAL is the SQLite journal mode")
         with sqlite3.connect(self.stores.input.path) as db:
             mode = db.execute("PRAGMA journal_mode").fetchone()[0]
         self.assertEqual(str(mode).lower(), "wal")
@@ -64,8 +76,8 @@ class StoreTests(unittest.TestCase):
 
     def test_unique_case_revision_is_enforced(self):
         self.stores.input.append_revision("AUTO-D01", {"n": 1})
-        with sqlite3.connect(self.stores.input.path) as db:
-            with self.assertRaises(sqlite3.IntegrityError):
+        with self.stores.input.connect() as db:
+            with self.assertRaises(IntegrityError):
                 db.execute(
                     """INSERT INTO input_revisions
                        (case_id, revision, ingested_at, document_set_sha256)
@@ -74,10 +86,10 @@ class StoreTests(unittest.TestCase):
 
     def test_input_revisions_cannot_be_updated_or_deleted(self):
         self.stores.input.append_revision("AUTO-D01", {"n": 1})
-        with sqlite3.connect(self.stores.input.path) as db:
-            with self.assertRaises(sqlite3.IntegrityError):
+        with self.stores.input.connect() as db:
+            with self.assertRaises(IntegrityError):
                 db.execute("UPDATE input_revisions SET loss_type = 'theft' WHERE case_id = 'AUTO-D01'")
-            with self.assertRaises(sqlite3.IntegrityError):
+            with self.assertRaises(IntegrityError):
                 db.execute("DELETE FROM input_revisions WHERE case_id = 'AUTO-D01'")
 
     def test_document_hash_defaults_to_payload_digest(self):
@@ -104,10 +116,10 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(event["duration_ms"], 12)
         self.assertIsNone(event["prev_hash"])
         self.assertTrue(isinstance(event["event_hash"], str) and len(event["event_hash"]) == 64)
-        with sqlite3.connect(self.stores.trace.path) as db:
-            with self.assertRaises(sqlite3.IntegrityError):
+        with self.stores.trace.connect() as db:
+            with self.assertRaises(IntegrityError):
                 db.execute("UPDATE trace_events SET status = 'changed'")
-            with self.assertRaises(sqlite3.IntegrityError):
+            with self.assertRaises(IntegrityError):
                 db.execute("DELETE FROM trace_events")
 
     def test_trace_events_are_hash_chained(self):
@@ -138,8 +150,8 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(updated.status, "pending")
         self.assertEqual(updated.review_id, "rev_1")
         self.assertEqual(updated.draft_hash, record.draft_hash)
-        with sqlite3.connect(self.stores.output.path) as db:
-            with self.assertRaises(sqlite3.IntegrityError):
+        with self.stores.output.connect() as db:
+            with self.assertRaises(IntegrityError):
                 db.execute("UPDATE drafts SET draft_json = '{}' WHERE draft_id = 'draft_test'")
 
     def test_latest_draft_is_the_most_recent_for_the_case(self):

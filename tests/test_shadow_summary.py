@@ -580,12 +580,12 @@ class ShadowSummaryTests(unittest.TestCase):
         self.assertEqual(latest.draft_hash, record.draft_hash)
         self.assertEqual(latest.draft, draft)
         self.assertNotEqual(latest.draft["narrative"], GOOD)
-        with sqlite3.connect(self.stores.output.path) as db:
+        with self.stores.output.connect() as db:
             count = db.execute("SELECT COUNT(*) FROM drafts").fetchone()[0]
         self.assertEqual(count, 1)
 
     def _assert_trace(self, safety, narrative, *, input_tokens=None, output_tokens=None, status="ok"):
-        with sqlite3.connect(self.stores.trace.path) as db:
+        with self.stores.trace.connect() as db:
             row = db.execute(
                 """SELECT step, event, actor, status, model_id, input_tokens, output_tokens,
                           shadow_narrative, shadow_safety_status, output_sha256
@@ -605,7 +605,7 @@ class ShadowSummaryTests(unittest.TestCase):
         self.assertEqual(row[9], digest(narrative))
 
     def _trace_blob(self):
-        with sqlite3.connect(self.stores.trace.path) as db:
+        with self.stores.trace.connect() as db:
             return " ".join(
                 "" if cell is None else str(cell)
                 for row in db.execute("SELECT * FROM trace_events")

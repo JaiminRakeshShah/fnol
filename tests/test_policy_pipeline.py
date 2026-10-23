@@ -146,7 +146,7 @@ def test_policy_faults_retry_then_stop():
         stored = stores.input.get_tool_payload("AUTO-D02", "policy", 1)
         assert "private_token" not in stored["raw_json"]
         assert "policies" in stored["raw_json"]
-        with sqlite3.connect(stores.trace.path) as db:
+        with stores.trace.connect() as db:
             rows = db.execute(
                 """SELECT case_id, mock_http_status FROM trace_events
                    WHERE step = '2' AND event = 'tool_read' AND case_id IN ('AUTO-D02', 'AUTO-D03')

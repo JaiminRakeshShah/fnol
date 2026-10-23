@@ -93,8 +93,7 @@ class RulesScreenTests(unittest.TestCase):
         )
 
     def _check_event(self, case_id):
-        with sqlite3.connect(self.stores.trace.path) as db:
-            db.row_factory = sqlite3.Row
+        with self.stores.trace.connect() as db:
             return db.execute(
                 """SELECT status, error_code, injection_field_status, injection_model_status,
                           model_id, actor
@@ -117,7 +116,7 @@ class RulesScreenTests(unittest.TestCase):
         self.assertEqual(event["injection_model_status"], "clean")
         self.assertEqual(event["error_code"], "instruction_text")
         self.assertEqual(event["model_id"], "fake-model")
-        self.assertNotIn(b"settlement approver", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"settlement approver", self.stores.trace.stored_blob())
 
     def test_model_injection_routes_manual_review_without_rewriting_the_revision(self):
         revision = self._ingest(["AUTO-D01"])["AUTO-D01"]
@@ -247,5 +246,5 @@ class RulesScreenTests(unittest.TestCase):
             )["CASE"]
         self._decide(revision, model)
         self.assertNotIn("SYNTHETIC-PRIVATE-", model.calls[0]["user"])
-        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.path.read_bytes())
-        self.assertNotIn(b"private_token", self.stores.trace.path.read_bytes())
+        self.assertNotIn(b"SYNTHETIC-PRIVATE-", self.stores.trace.stored_blob())
+        self.assertNotIn(b"private_token", self.stores.trace.stored_blob())

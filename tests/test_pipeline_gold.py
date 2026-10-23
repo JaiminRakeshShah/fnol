@@ -100,8 +100,8 @@ class PipelineGoldTests(unittest.TestCase):
             self.assertEqual(by_route["AUTO-D07"]["selected_policy_version"], "2")
             self.assertFalse(by_route["AUTO-D09"]["duplicate_delivery"])
             self._assert_attempt_counts(stores)
-            for path in (stores.input.path, stores.trace.path, stores.output.path):
-                blob = path.read_bytes()
+            for store in (stores.input, stores.trace, stores.output):
+                blob = store.stored_blob()
                 self.assertNotIn(b"private_token", blob)
                 self.assertNotIn(b"SYNTHETIC-PRIVATE-", blob)
         finally:
@@ -113,7 +113,7 @@ class PipelineGoldTests(unittest.TestCase):
             mock_dir.cleanup()
 
     def _assert_attempt_counts(self, stores):
-        with sqlite3.connect(stores.trace.path) as db:
+        with stores.trace.connect() as db:
             rows = db.execute(
                 """SELECT case_id, attempt, mock_http_status, trace_id, input_revision
                    FROM trace_events

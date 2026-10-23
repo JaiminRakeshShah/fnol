@@ -100,7 +100,9 @@ def create_server(host: str = "0.0.0.0", port: int = 8090, state: Path | None = 
                 return
             if path == "/v1/pending":
                 with connect(state_path) as db:
-                    rows = [dict(x) for x in db.execute("SELECT * FROM reviews WHERE status='pending'")]
+                    rows = [dict(x) for x in db.execute(
+                        "SELECT id, case_id, draft, hash, status, reviewer FROM reviews WHERE status='pending'"
+                    )]
                 self._json(200, rows)
                 return
             if path == "/v1/audit":
@@ -122,7 +124,11 @@ def create_server(host: str = "0.0.0.0", port: int = 8090, state: Path | None = 
                 status = "approved" if action == "approve" else "rejected"
                 reviewer = _reviewer_name(self.headers)
                 with connect(state_path) as db:
-                    row = db.execute("SELECT * FROM reviews WHERE id=?", (review_id,)).fetchone()
+                    db.begin_immediate(f"review:{review_id}")
+                    row = db.execute(
+                        "SELECT id, case_id, draft, hash, status, reviewer FROM reviews WHERE id=?",
+                        (review_id,),
+                    ).fetchone()
                     if not row or row["status"] != "pending":
                         self._json(409, {"error": "review_not_pending"})
                         return

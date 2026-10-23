@@ -50,8 +50,8 @@ def start_policy(
             **decision,
         })
     return {
-        "input_sqlite": str(stores.input.path.resolve()),
-        "trace_sqlite": str(stores.trace.path.resolve()),
+        "input_sqlite": stores.input.locator,
+        "trace_sqlite": stores.trace.locator,
         "case_count": len(selected),
         "policies": selected,
     }
