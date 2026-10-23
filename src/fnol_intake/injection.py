@@ -1,12 +1,15 @@
-"""Deterministic extra-field check on supplied documents.
+"""Deterministic prompt-injection scan, plus an inventory of unknown labels.
 
 A ``Label: value`` line whose label is not a known label for that document is
-an extra field. Intake stores those labels on the immutable revision. The
-model screen of the labels and leftover lines runs later, on the rules service,
-so a model outage cannot block the revision.
+an extra field. The label is stored. It is not an injection by itself.
+Injection is a line that tries to instruct a model, reviewer, or approver.
+Intake stores that verdict on the immutable revision. The Bedrock screen of
+the labels and leftover lines runs later, on the rules service.
 """
 
 from __future__ import annotations
+
+import re
 
 from fnol_foundation.canonical import RESTRICTED_MARKERS
 
@@ -15,6 +18,20 @@ INJECTION = "injection"
 ERROR = "error"
 
 RESTRICTED_LABEL = "restricted_label"
+
+# Light patterns for instruction-shaped text. An unknown label does not match.
+_INSTRUCTION = re.compile(
+    r"you\s+are\s+now"
+    r"|ignore\s+(?:any|all|previous|prior|every)"
+    r"|disregard\s+(?:any|all|previous|prior|the)"
+    r"|override\s+(?:any|the|all\s+)?(?:rules|approval|policy|human)"
+    r"|print\s+all\s+private"
+    r"|private\s+tokens"
+    r"|reveal\s+(?:private|hidden|secret)"
+    r"|approve\s+and\s+pay"
+    r"|pay\s+immediately",
+    re.IGNORECASE,
+)
 
 
 def _header(line):
@@ -37,5 +54,9 @@ def extra_fields(text, labels):
     return found
 
 
-def field_status(items):
-    return INJECTION if items else CLEAN
+def instruction_status(*texts):
+    """``injection`` when any supplied document text matches an instruction pattern."""
+    for text in texts:
+        if isinstance(text, str) and _INSTRUCTION.search(text):
+            return INJECTION
+    return CLEAN

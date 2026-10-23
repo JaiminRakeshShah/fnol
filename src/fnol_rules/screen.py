@@ -1,9 +1,10 @@
-"""Model screen for extra-field labels and leftover lines.
+"""Bedrock screen for extra-field labels and leftover lines.
 
 Rules owns this call. Intake has already stored the revision, including the
-extra-field labels. A missing or failed model is not clean, and the route
-becomes manual_review. The shadow guardrail is not attached here: that
-filter is only for the analyst's shadow narrative.
+extra-field labels and the deterministic instruction verdict. The model is
+called at most three times. A reply of clean or injection stops the loop.
+If every attempt fails, or the screen is missing, the verdict is not clean
+and the route is manual_review. The shadow guardrail is not attached here.
 """
 
 from __future__ import annotations
@@ -15,10 +16,12 @@ import time
 from dataclasses import dataclass, replace
 
 from fnol_foundation.canonical import RESTRICTED_MARKERS
+from fnol_foundation.http import MAX_ATTEMPTS
 from fnol_intake.injection import CLEAN, ERROR, INJECTION
 from fnol_rules.types import StructuredFields
 
 MODEL_TIMEOUT_SECONDS = 20
+SCREEN_ATTEMPTS = MAX_ATTEMPTS
 USE_DEFAULT = object()
 
 SYSTEM_PROMPT = (
@@ -45,6 +48,7 @@ class ModelVerdict:
     model_id: str | None = None
     input_tokens: int | None = None
     output_tokens: int | None = None
+    attempt: int = 1
 
 
 def leftover_lines(payload: dict) -> list[dict]:
@@ -116,39 +120,51 @@ def model_check(client, items, leftover):
     """Ask the model for one word. Anything except ``clean`` is not clean.
 
     No extra field and no leftover line skips the call and counts as clean.
+    A missing client is one failed check. A live client is tried at most
+    three times, and the loop stops on clean or injection.
     """
     if not items and not leftover:
         return ModelVerdict(CLEAN)
     if client is None:
         return ModelVerdict(ERROR, "model_unavailable")
+    last = ModelVerdict(ERROR, "model_unavailable")
+    for attempt in range(1, SCREEN_ATTEMPTS + 1):
+        last = _one_call(client, items, leftover, attempt)
+        if last.status in (CLEAN, INJECTION):
+            return last
+    return last
+
+
+def _one_call(client, items, leftover, attempt):
     model_id = getattr(client, "model_id", None)
     system, user = build_prompt(items, leftover)
     try:
         reply = client.chat(system, user)
     except (TimeoutError, socket.timeout):
-        return ModelVerdict(ERROR, "model_timeout", model_id)
+        return ModelVerdict(ERROR, "model_timeout", model_id, attempt=attempt)
     except Exception as exc:
-        return ModelVerdict(ERROR, getattr(exc, "error_code", None) or "model_error", model_id)
+        return ModelVerdict(
+            ERROR, getattr(exc, "error_code", None) or "model_error", model_id, attempt=attempt
+        )
     tokens = {
         "input_tokens": getattr(reply, "input_tokens", None),
         "output_tokens": getattr(reply, "output_tokens", None),
     }
     if getattr(reply, "guardrail_action", None) == "INTERVENED":
-        return ModelVerdict(ERROR, "model_filtered", model_id, **tokens)
+        return ModelVerdict(ERROR, "model_filtered", model_id, attempt=attempt, **tokens)
     word = _word(getattr(reply, "text", None))
     if word == CLEAN:
-        return ModelVerdict(CLEAN, None, model_id, **tokens)
+        return ModelVerdict(CLEAN, None, model_id, attempt=attempt, **tokens)
     if word == INJECTION:
-        return ModelVerdict(INJECTION, "model_injection", model_id, **tokens)
-    return ModelVerdict(ERROR, "model_non_answer", model_id, **tokens)
+        return ModelVerdict(INJECTION, "model_injection", model_id, attempt=attempt, **tokens)
+    return ModelVerdict(ERROR, "model_non_answer", model_id, attempt=attempt, **tokens)
 
 
 def default_client():
     """Mantle when FNOL_MODEL_PROVIDER=bedrock.
 
-    Any other provider returns None, which counts as not clean when a document
-    has leftover lines or extra fields. This client does not send the shadow
-    guardrail.
+    Any other provider returns None, which is a missing screen and is not
+    clean. This client does not send the shadow guardrail.
     """
     provider = os.environ.get("FNOL_MODEL_PROVIDER", "").strip().lower()
     if provider == "bedrock":

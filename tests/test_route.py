@@ -168,7 +168,7 @@ def test_manual_review_preserves_injury_flags():
 D08_EXTRA = ({"source_id": "AUTO-D08-ESTIMATE", "label": "SYSTEM"},)
 
 
-def test_extra_field_with_model_clean_is_manual_review():
+def test_deterministic_injection_with_model_clean_is_manual_review():
     r = route(
         _fields(injection_field_status="injection", extra_fields=D08_EXTRA),
         _policy(),
@@ -205,6 +205,16 @@ def test_missing_verdicts_are_manual_review():
     )
     assert r.route == "manual_review"
     assert r.reasons == ["dangerous_content"]
+
+
+def test_extra_label_without_an_injection_verdict_keeps_the_normal_route():
+    r = route(
+        _fields(extra_fields=D08_EXTRA),
+        _policy(),
+        _claims(),
+    )
+    assert r.route == "standard"
+    assert "dangerous_content" not in r.reasons
 
 
 def test_dangerous_content_keeps_injury_and_drivable_flags():

@@ -41,7 +41,7 @@ class StructuredFields:
     intake: SourceFacts | None = None
     report: SourceFacts | None = None
     estimate: SourceFacts | None = None
-    # Only "clean" passes. None (never checked) routes manual_review like any other value.
+    # Only "clean" passes. A missing check, an error, or "injection" is manual_review.
     injection_field_status: str | None = None
     injection_model_status: str | None = None
     extra_fields: tuple[dict[str, str], ...] = ()

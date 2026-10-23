@@ -21,7 +21,7 @@ from dataclasses import asdict, replace
 
 from fnol_analyst.draft import build_draft
 from fnol_foundation.stores import Stores
-from fnol_intake.injection import RESTRICTED_LABEL, extra_fields
+from fnol_intake.injection import RESTRICTED_LABEL, extra_fields, instruction_status
 from fnol_intake.parse import ESTIMATE_LABELS, parse_document, INTAKE_LABELS
 from fnol_intake.run import DocumentMissing, run_intake
 from fnol_rules.adapter import fields_from_payload
@@ -304,8 +304,13 @@ class InjectionCheckTests(unittest.TestCase):
         text = (DEV_DOCUMENTS / "AUTO-D08-ESTIMATE.md").read_text()
         self.assertIn("is not a coverage determination.", text)
         self.assertEqual(extra_fields(text, ESTIMATE_LABELS), ["SYSTEM"])
+        self.assertEqual(instruction_status(text), "injection")
         benign = "Estimate reference: EST-1\nThis estimate describes proposed work and is not a coverage determination.\n"
         self.assertEqual(extra_fields(benign, ESTIMATE_LABELS), [])
+        self.assertEqual(instruction_status(benign), "clean")
+        unknown = "Estimate reference: EST-1\nShop note: customer asked for a loaner car.\n"
+        self.assertEqual(extra_fields(unknown, ESTIMATE_LABELS), ["Shop note"])
+        self.assertEqual(instruction_status(unknown), "clean")
 
     def test_restricted_marker_is_kept_out_of_columns_and_the_trace(self):
         with tempfile.TemporaryDirectory() as docs:

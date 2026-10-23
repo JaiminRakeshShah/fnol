@@ -25,7 +25,7 @@ from fnol_rules.pipeline import start_routing
 DEV_DOCUMENTS = ROOT / "data" / "dev" / "documents"
 DEV_POLICIES = ROOT / "data" / "dev" / "policies"
 GOLD = json.loads((ROOT / "feedback" / "dev_gold.json").read_text())
-# dev_gold.json still says standard for AUTO-D08; its extra SYSTEM field now forces manual_review.
+# dev_gold.json still says standard for AUTO-D08; its instruction line forces manual_review.
 ROUTE_OVERRIDES = {"AUTO-D08": "manual_review"}
 
 

@@ -10,7 +10,7 @@ from fnol_foundation.canonical import RestrictedValueError, digest
 from fnol_foundation.events import record_event
 from fnol_foundation.http import public_error
 from fnol_foundation.stores import Stores
-from fnol_intake.injection import CLEAN
+from fnol_intake.injection import CLEAN, INJECTION
 from fnol_rules.claims import ClaimsFetchResult, fetch_claims
 from fnol_rules.route import route
 from fnol_rules.screen import USE_DEFAULT, resolve_client, screen_fields
@@ -47,9 +47,9 @@ def run_rules(
 ) -> RouteResult:
     """Fetch claims, screen leftover text, route, and store the decision.
 
-    The model screen does not update the intake revision. A failed screen
-    sets the model status used by the route and is recorded on the trace
-    without the prompt or the line text.
+    The model screen does not update the intake revision. A missing screen
+    or three failed calls is not clean, so the route is manual_review. The
+    trace records the outcome without the prompt or the line text.
     """
     fetcher = fetch or fetch_claims
     result = fetcher(case_id, base_url)
@@ -118,8 +118,8 @@ def run_rules(
     field_status = fields.injection_field_status
     clean = field_status == CLEAN and verdict.status == CLEAN
     error_code = verdict.error_code
-    if error_code is None and field_status != CLEAN:
-        error_code = "extra_field"
+    if error_code is None and field_status == INJECTION:
+        error_code = "instruction_text"
     parent = record_event(
         stores,
         trace_id=trace_id,
@@ -140,7 +140,7 @@ def run_rules(
         duration_ms=check_ms,
         started_at=datetime.now(timezone.utc),
         input_sha256=input_sha256,
-        attempt=1,
+        attempt=verdict.attempt,
     )
     routed = route(fields, policy, snapshot)
     body = asdict(routed)

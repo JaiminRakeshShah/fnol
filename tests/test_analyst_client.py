@@ -84,7 +84,7 @@ class AnalystClientTests(unittest.TestCase):
         submission = json.loads(self.export_path.read_text())
         result = evaluate(DATASET, GOLD, submission)
         failed = {row["case_id"]: row for row in result["cases"] if not row["passed"]}
-        # dev_gold.json still says standard for AUTO-D08; the extra SYSTEM field routes it manual_review.
+        # dev_gold.json still says standard for AUTO-D08; the instruction line routes it manual_review.
         self.assertEqual(set(failed), {"AUTO-D08"}, result)
         failing_checks = [name for name, ok in failed["AUTO-D08"]["checks"].items() if not ok]
         self.assertEqual(failing_checks, ["routing"])
