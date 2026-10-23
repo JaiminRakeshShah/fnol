@@ -39,10 +39,6 @@ Parameters:
     Default: ""
     AllowedPattern: "^$|[A-Za-z0-9._-]+"
     Description: DatabaseEndpoint output from the fnol-data stack. Required when StateBackend is postgres.
-  MigrateSecretArn:
-    Type: String
-    AllowedPattern: "arn:aws:secretsmanager:[a-z0-9-]+:[0-9]{12}:secret:.+"
-    Description: MasterSecretArn output from the fnol-data stack. The migrate task reads it. Services do not.
   MountEfs:
     Type: String
     Default: "true"
@@ -630,7 +626,7 @@ Resources:
             - UsePostgres
             - - /bin/sh
               - -c
-              - uv run --locked --group aws --group postgres --no-dev python -c "import psycopg" && exec sleep infinity
+              - uv run --locked --group aws --group postgres --no-dev python -c "import psycopg; from fnol_foundation.db import ensure_ready; ensure_ready()" && exec sleep infinity
             - - sleep
               - infinity
           Environment:
@@ -967,8 +963,16 @@ Resources:
             - python
             - tools/migrate.py
           Environment:
-            - Name: FNOL_DB_SECRET_ARN
-              Value: !Ref MigrateSecretArn
+            - Name: FNOL_RDS_IAM_AUTH
+              Value: "1"
+            - Name: FNOL_RDS_HOST
+              Value: !Ref DatabaseEndpoint
+            - Name: FNOL_RDS_PORT
+              Value: "5432"
+            - Name: FNOL_RDS_DB
+              Value: !Ref DatabaseName
+            - Name: FNOL_RDS_USER
+              Value: fnol_migrate
             - Name: FNOL_PG_NAMESPACE
               Value: !Ref PgNamespace
             - Name: AWS_REGION

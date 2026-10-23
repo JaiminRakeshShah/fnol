@@ -105,8 +105,63 @@ def migration_files() -> list[Path]:
     return files
 
 
+def pending_versions(applied: set[str], files: list[Path]) -> list[str]:
+    """SQL files that are not yet recorded for this namespace, in apply order."""
+    return [path.name for path in files if path.name not in applied]
+
+
+def verify_migrations(suffix: str | None = None) -> None:
+    """Confirm this namespace's files are already recorded.
+
+    Service roles call this at startup. They are not allowed to create
+    ``public.fnol_schema_migrations`` or apply DDL. ``tools/migrate.py`` does that.
+    """
+    if suffix is None:
+        suffix = namespace_suffix(None)
+    url = database_url()
+    if not url:
+        raise RuntimeError(
+            "PostgreSQL is not configured. Set FNOL_DATABASE_URL or FNOL_RDS_HOST "
+            "with IAM auth or a password."
+        )
+    import psycopg
+
+    label = namespace_label(suffix)
+    files = migration_files()
+    with psycopg.connect(url, connect_timeout=15) as conn:
+        try:
+            rows = conn.execute(
+                """SELECT version FROM public.fnol_schema_migrations
+                   WHERE namespace = %s""",
+                (label,),
+            ).fetchall()
+        except psycopg.Error as exc:
+            if getattr(exc, "sqlstate", None) == "42P01":
+                raise RuntimeError(
+                    "public.fnol_schema_migrations does not exist. "
+                    "Run tools/migrate.py before starting services."
+                ) from exc
+            if getattr(exc, "sqlstate", None) == "42501":
+                raise RuntimeError(
+                    "this database user cannot read public.fnol_schema_migrations. "
+                    "Grant SELECT, or run tools/migrate.py as fnol_migrate."
+                ) from exc
+            raise
+    missing = pending_versions({row[0] for row in rows}, files)
+    if missing:
+        raise RuntimeError(
+            "PostgreSQL migrations are not applied for namespace "
+            f"{label}: {', '.join(missing)}. Run tools/migrate.py."
+        )
+
+
 def apply_migrations(suffix: str | None = None) -> list[str]:
-    """Apply any pending files for this namespace. Returns the versions applied."""
+    """Apply any pending files for this namespace. Returns the versions applied.
+
+    This creates ``public.fnol_schema_migrations`` when it is missing. Only the
+    migrate role (or a local database owner) may call it. Services use
+    ``verify_migrations``.
+    """
     if suffix is None:
         suffix = namespace_suffix(None)
     url = database_url()

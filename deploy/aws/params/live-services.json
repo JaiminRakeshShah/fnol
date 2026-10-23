@@ -1,15 +1,11 @@
 [
   {
-    "ParameterKey": "MigrateSecretArn",
-    "ParameterValue": "arn:aws:secretsmanager:us-east-1:104005345381:secret:REPLACE_WITH_MasterSecretArn"
-  },
-  {
     "ParameterKey": "DatabaseEndpoint",
-    "ParameterValue": "REPLACE_WITH_DatabaseEndpoint"
+    "ParameterValue": "fnol-postgres.cc92c6i402lj.us-east-1.rds.amazonaws.com"
   },
   {
     "ParameterKey": "ImageTag",
-    "ParameterValue": "REPLACE_WITH_TAG"
+    "ParameterValue": "1.2.1"
   },
   {
     "ParameterKey": "StateBackend",

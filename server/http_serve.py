@@ -83,6 +83,10 @@ def create_server(
 
 
 def serve_tools(name: str, tools: dict[str, ToolFn]) -> None:
+    from fnol_foundation.db import ensure_ready, using_postgres
+
+    if using_postgres():
+        ensure_ready()
     host = os.environ.get("FNOL_HTTP_HOST", "0.0.0.0")
     port = int(os.environ.get("FNOL_HTTP_PORT", "8080"))
     server = create_server(name, tools, host=host, port=port)

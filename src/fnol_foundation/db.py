@@ -285,14 +285,17 @@ def open_db(path: Path, *, kind: str) -> Connection:
 
 
 def ensure_ready(anchor: Path | None = None) -> str:
-    """Apply versioned DDL for this namespace once per process. Returns the suffix."""
+    """Confirm versioned DDL for this namespace once per process. Returns the suffix.
+
+    Does not create tables. ``tools/migrate.py`` applies the SQL files.
+    """
     suffix = namespace_suffix(anchor)
     with _READY_LOCK:
         if suffix in _READY:
             return suffix
-        from fnol_foundation.migrate import apply_migrations
+        from fnol_foundation.migrate import verify_migrations
 
-        apply_migrations(suffix)
+        verify_migrations(suffix)
         _READY.add(suffix)
     return suffix
 
@@ -434,6 +437,19 @@ def _url_from_iam(host: str) -> str:
     return url
 
 
+def secret_host(payload: dict) -> str:
+    """Host from a secret, or FNOL_RDS_HOST when the secret only has a password."""
+    host = str(payload.get("host") or "").strip()
+    if host:
+        return host
+    fallback = os.environ.get("FNOL_RDS_HOST", "").strip()
+    if not fallback:
+        raise RuntimeError(
+            "The database secret has no host. Set FNOL_RDS_HOST to the database endpoint."
+        )
+    return fallback
+
+
 def _url_from_secret(arn: str) -> str:
     now = time.time()
     cached = _SECRET_CACHE.get(arn)
@@ -445,7 +461,7 @@ def _url_from_secret(arn: str) -> str:
     payload = json.loads(client.get_secret_value(SecretId=arn)["SecretString"])
     user = payload["username"]
     password = payload["password"]
-    host = payload["host"]
+    host = secret_host(payload)
     port = str(payload.get("port") or 5432)
     dbname = payload.get("dbname") or payload.get("database") or os.environ.get("FNOL_RDS_DB", "fnol")
     previous_port = os.environ.get("FNOL_RDS_PORT")

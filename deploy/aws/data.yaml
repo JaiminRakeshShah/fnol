@@ -335,23 +335,18 @@ Resources:
               ArnLike:
                 aws:SourceArn: !Sub arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:*
       Policies:
-        - PolicyName: read-master-secret
+        - PolicyName: connect-as-migrate
           PolicyDocument:
             Version: "2012-10-17"
             Statement:
-              - Sid: ReadMasterSecret
+              - Sid: ConnectAsMigrate
                 Effect: Allow
-                Action:
-                  - secretsmanager:GetSecretValue
-                  - secretsmanager:DescribeSecret
-                Resource: !GetAtt Database.MasterUserSecret.SecretArn
-              - Sid: DecryptMasterSecret
-                Effect: Allow
-                Action: kms:Decrypt
-                Resource: !Ref EvidenceKeyArn
-                Condition:
-                  StringEquals:
-                    kms:ViaService: !Sub secretsmanager.${AWS::Region}.amazonaws.com
+                Action: rds-db:connect
+                Resource: !Sub
+                  - arn:aws:rds-db:${Region}:${Account}:dbuser:${DbResource}/fnol_migrate
+                  - Region: !Ref AWS::Region
+                    Account: !Ref AWS::AccountId
+                    DbResource: !GetAtt Database.DbiResourceId
 
   IntakeDbConnect:
     Type: AWS::IAM::Policy

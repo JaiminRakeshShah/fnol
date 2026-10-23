@@ -125,7 +125,7 @@ docker build -f deploy/Dockerfile -t 104005345381.dkr.ecr.us-east-1.amazonaws.co
 docker push 104005345381.dkr.ecr.us-east-1.amazonaws.com/fnol:NEW_TAG
 ```
 
-4. Fill in `deploy/aws/params/live-services.json`. Replace the secret ARN and the endpoint with the `fnol-data` outputs `MasterSecretArn` and `DatabaseEndpoint`. Set `ImageTag` to `NEW_TAG`. Leave `StateBackend=postgres`, `MountEfs=true`, and `ManageServices=false`.
+4. Fill in `deploy/aws/params/live-services.json`. Set `DatabaseEndpoint` from the `fnol-data` output and `ImageTag` to `NEW_TAG`. Leave `StateBackend=postgres`, `MountEfs=true`, and `ManageServices=false`. The migrate task does not read the master secret. It connects as the database role `fnol_migrate` with the IAM role `fnol-migrate`.
 
 5. Register task definition revisions. With `ManageServices=false` the running services stay on `fnol-<service>:3`.
 
@@ -138,7 +138,9 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-6. Run the migrate task once, from the app subnets, using `fnol-tasks`. It applies `deploy/aws/sql/postgres/*.sql` as the master user and records versions in `public.fnol_schema_migrations`. That creates schemas `input`, `output`, `trace`, `mock`, and `desk`, and login roles `fnol_intake`, `fnol_policy`, `fnol_rules`, `fnol_citations`, `fnol_analyst`, `fnol_enterprise`, `fnol_reviewer`, and `fnol_desk`. On RDS those roles are granted `rds_iam`.
+6. Run the migrate task once, from the app subnets, using `fnol-tasks`. It connects with IAM as `fnol_migrate` (`FNOL_RDS_IAM_AUTH=1`, `FNOL_RDS_HOST` set to the instance endpoint). It applies `deploy/aws/sql/postgres/*.sql` and records versions in `public.fnol_schema_migrations`. That creates schemas `input`, `output`, `trace`, `mock`, and `desk`, and login roles `fnol_intake`, `fnol_policy`, `fnol_rules`, `fnol_citations`, `fnol_analyst`, `fnol_enterprise`, `fnol_reviewer`, `fnol_desk`, and `fnol_migrate`. On RDS those roles are granted `rds_iam`. Service tasks only check that the ledger already lists every file. They do not create `public.fnol_schema_migrations`.
+
+`008_migrate_role.sql` creates `fnol_migrate`. The first time that file is applied, connect as the RDS master user (the managed secret's username and password, with `FNOL_RDS_HOST` set, because that secret has no host). After `fnol_migrate` exists, use the IAM task definition and do not put the secret on the task.
 
 ```sh
 MIGRATE_TD=$(aws cloudformation describe-stacks --region us-east-1 \

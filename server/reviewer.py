@@ -159,6 +159,10 @@ def main(argv=None) -> int:
     parser.add_argument("--port", type=int, default=int(os.environ.get("FNOL_HTTP_PORT", "8090")))
     parser.add_argument("--state", type=Path, default=None)
     args = parser.parse_args(argv)
+    from fnol_foundation.db import ensure_ready, using_postgres
+
+    if using_postgres():
+        ensure_ready()
     server = create_server(host=args.host, port=args.port, state=args.state)
     print(f"reviewer HTTP on http://{args.host}:{args.port}", flush=True)
     try:
