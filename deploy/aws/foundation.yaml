@@ -250,7 +250,7 @@ Resources:
               "Action": "sts:AssumeRole",
               "Condition": {
                 "StringEquals": {"aws:SourceAccount": "${Account}"},
-                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:task/${Cluster}/*"}
+                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:*"}
               }
             }]
           }
@@ -317,7 +317,7 @@ Resources:
               "Action": "sts:AssumeRole",
               "Condition": {
                 "StringEquals": {"aws:SourceAccount": "${Account}"},
-                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:task/${Cluster}/*"}
+                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:*"}
               }
             }]
           }
@@ -374,7 +374,7 @@ Resources:
               "Action": "sts:AssumeRole",
               "Condition": {
                 "StringEquals": {"aws:SourceAccount": "${Account}"},
-                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:task/${Cluster}/*"}
+                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:*"}
               }
             }]
           }
@@ -432,7 +432,7 @@ Resources:
               "Action": "sts:AssumeRole",
               "Condition": {
                 "StringEquals": {"aws:SourceAccount": "${Account}"},
-                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:task/${Cluster}/*"}
+                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:*"}
               }
             }]
           }
@@ -475,7 +475,7 @@ Resources:
               "Action": "sts:AssumeRole",
               "Condition": {
                 "StringEquals": {"aws:SourceAccount": "${Account}"},
-                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:task/${Cluster}/*"}
+                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:*"}
               }
             }]
           }
@@ -515,7 +515,7 @@ Resources:
               "Action": "sts:AssumeRole",
               "Condition": {
                 "StringEquals": {"aws:SourceAccount": "${Account}"},
-                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:task/${Cluster}/*"}
+                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:*"}
               }
             }]
           }
@@ -545,7 +545,7 @@ Resources:
               "Action": "sts:AssumeRole",
               "Condition": {
                 "StringEquals": {"aws:SourceAccount": "${Account}"},
-                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:task/${Cluster}/*"}
+                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:*"}
               }
             }]
           }
@@ -575,7 +575,7 @@ Resources:
               "Action": "sts:AssumeRole",
               "Condition": {
                 "StringEquals": {"aws:SourceAccount": "${Account}"},
-                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:task/${Cluster}/*"}
+                "ArnLike": {"aws:SourceArn": "arn:aws:ecs:${Region}:${Account}:*"}
               }
             }]
           }
