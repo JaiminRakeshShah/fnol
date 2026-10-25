@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from fnol_foundation.canonical import EVIDENCE_TEXT_COLUMNS, RESTRICTED_MARKERS, RestrictedValueError, digest
 from fnol_foundation.events import record_event
 
+from fnol_intake import injection
 from fnol_intake.parse import (
     document_kind,
     file_sha256,
@@ -71,6 +72,10 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
     revision for that case. A restricted marker in a structured field is dropped.
     The raw file is still stored. One refused case does not drop the others.
     Calling this again inserts the next revision.
+
+    Each revision carries the extra-field list and the deterministic field
+    status. The model screen runs on the rules service after this write, so a
+    model outage still leaves the revision in place.
     """
     fetch = transport or default_transport
     trace_id = uuid.uuid4().hex
@@ -142,10 +147,10 @@ def run_intake(stores, mock_url, documents_dir, policies_dir, transport=None):
         raise DocumentMissing(missing)
 
     stores.input.store_procedures(procedures)
-    payloads = [_scrub_structured(_payload(item)) for item in loaded]
     revisions = []
     refused = []
-    for payload in payloads:
+    for item in loaded:
+        payload = _scrub_structured(_payload(item))
         started = time.perf_counter()
         try:
             revision = stores.input.append_revision(
@@ -266,18 +271,28 @@ def _scrub_structured(payload):
 
 
 def _payload(item):
+    """Return the revision payload.
+
+    Extra-field labels are stored. Leftover lines stay in the note fields for
+    the rules screen. They are not a separate payload list.
+    """
     parsed_docs = []
     repeated = []
+    extra = []
     intake_parsed = None
     intake_doc = None
     estimate = None
     report = None
     for document in item["documents"]:
         kind = document_kind(document["source_id"], item["intake_source"])
-        parsed = parse_document(document["raw_text"], labels_for(kind))
+        labels = labels_for(kind)
+        parsed = parse_document(document["raw_text"], labels)
         for name in parsed["duplicate_fields"]:
             if name not in repeated:
                 repeated.append(name)
+        if kind in ("intake", "estimate", "report"):
+            for label in injection.extra_fields(document["raw_text"], labels):
+                extra.append({"source_id": document["source_id"], "label": label})
         entry = {
             "source_id": document["source_id"],
             "kind": kind,
@@ -304,7 +319,7 @@ def _payload(item):
     estimate_fields = {} if estimate is None else estimate["fields"]
     report_fields = {} if report is None else report["fields"]
     document_set = [{"sha256": doc["sha256"], "source_id": doc["source_id"]} for doc in parsed_docs]
-    return {
+    payload = {
         "case_id": item["case_id"],
         "document_set_sha256": digest(document_set),
         "intake_source": item["intake_source"],
@@ -342,4 +357,9 @@ def _payload(item):
         "report_notes": None if report is None else _notes(report["unlabeled_lines"]),
         "raw_report": None if report is None else report["raw_text"],
         "repeated_fields": repeated,
+        "extra_fields": extra,
+        "injection_field_status": injection.instruction_status(
+            *(document["raw_text"] for document in item["documents"])
+        ),
     }
+    return payload

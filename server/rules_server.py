@@ -20,8 +20,10 @@ START_ROUTING = {
     "name": "start_routing",
     "description": (
         "Fetch claims, retry a transport error or HTTP 5xx at most three times, "
-        "store the canonical claims JSON, and route with AUTO-TRIAGE-01. Requires "
-        "an intake revision and the policy decision for that same revision."
+        "screen extra-field labels and leftover lines, store the canonical claims "
+        "JSON, and route with AUTO-TRIAGE-01. Requires an intake revision and the "
+        "policy decision for that same revision. The model screen does not change "
+        "the stored revision."
     ),
     "inputSchema": {
         "type": "object",
@@ -78,5 +80,14 @@ def serve(stdin=None, stdout=None):
     serve_rpc(handle, stdin=stdin, stdout=stdout)
 
 
+def serve_http():
+    from server.http_serve import serve_tools
+
+    serve_tools("rules", {"start_routing": start_routing})
+
+
 if __name__ == "__main__":
-    serve()
+    if len(sys.argv) > 1 and sys.argv[1] == "--http":
+        serve_http()
+    else:
+        serve()

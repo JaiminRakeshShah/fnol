@@ -1,4 +1,5 @@
-# Reproducible teammate environment: Python 3.12 + uv. No app deps beyond stdlib.
+# Reproducible teammate environment: Python 3.12 + uv.
+# The default path is the standard library. Compose installs the postgres group.
 FROM mcr.microsoft.com/devcontainers/python:1-3.12-bookworm
 
 # Pin uv for lockfile-compatible installs across machines.

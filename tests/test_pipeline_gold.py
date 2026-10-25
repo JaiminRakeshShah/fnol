@@ -14,7 +14,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
+sys.path.insert(0, str(ROOT / "tests"))
 
+from fake_model import FakeModel
 from fnol_foundation.stores import Stores
 from fnol_intake.pipeline import start_ingestion
 from fnol_policy.pipeline import start_policy
@@ -23,6 +25,8 @@ from fnol_rules.pipeline import start_routing
 DEV_DOCUMENTS = ROOT / "data" / "dev" / "documents"
 DEV_POLICIES = ROOT / "data" / "dev" / "policies"
 GOLD = json.loads((ROOT / "feedback" / "dev_gold.json").read_text())
+# dev_gold.json still says standard for AUTO-D08; its instruction line forces manual_review.
+ROUTE_OVERRIDES = {"AUTO-D08": "manual_review"}
 
 
 class PipelineGoldTests(unittest.TestCase):
@@ -57,7 +61,11 @@ class PipelineGoldTests(unittest.TestCase):
                 state_dir_path=fnol_state.name,
             )
             policies = start_policy(mock_url=url, state_dir_path=fnol_state.name)
-            routes = start_routing(mock_url=url, state_dir_path=fnol_state.name)
+            routes = start_routing(
+                mock_url=url,
+                state_dir_path=fnol_state.name,
+                screen_client=FakeModel("clean"),
+            )
             by_policy = {row["case_id"]: row for row in policies["policies"]}
             by_route = {row["case_id"]: row for row in routes["routes"]}
             self.assertEqual(set(by_route), set(GOLD))
@@ -65,7 +73,11 @@ class PipelineGoldTests(unittest.TestCase):
             for case_id, gold in GOLD.items():
                 route = by_route[case_id]
                 policy = by_policy[case_id]
-                self.assertEqual(route["route"], gold["routing"][0], case_id)
+                expected = ROUTE_OVERRIDES.get(case_id, gold["routing"][0])
+                self.assertEqual(route["route"], expected, case_id)
+                self.assertEqual(
+                    "dangerous_content" in route["reasons"], case_id == "AUTO-D08", case_id
+                )
                 self.assertEqual(route["classification"], gold["classification"][0], case_id)
                 self.assertEqual(
                     route["selected_policy_version"],
@@ -88,8 +100,8 @@ class PipelineGoldTests(unittest.TestCase):
             self.assertEqual(by_route["AUTO-D07"]["selected_policy_version"], "2")
             self.assertFalse(by_route["AUTO-D09"]["duplicate_delivery"])
             self._assert_attempt_counts(stores)
-            for path in (stores.input.path, stores.trace.path, stores.output.path):
-                blob = path.read_bytes()
+            for store in (stores.input, stores.trace, stores.output):
+                blob = store.stored_blob()
                 self.assertNotIn(b"private_token", blob)
                 self.assertNotIn(b"SYNTHETIC-PRIVATE-", blob)
         finally:
@@ -101,7 +113,7 @@ class PipelineGoldTests(unittest.TestCase):
             mock_dir.cleanup()
 
     def _assert_attempt_counts(self, stores):
-        with sqlite3.connect(stores.trace.path) as db:
+        with stores.trace.connect() as db:
             rows = db.execute(
                 """SELECT case_id, attempt, mock_http_status, trace_id, input_revision
                    FROM trace_events

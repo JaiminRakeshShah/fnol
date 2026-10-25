@@ -8,6 +8,7 @@ value the mock binds approval to.
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from fnol_foundation.canonical import assert_no_restricted
@@ -43,7 +44,12 @@ REASON_TEXT = {
     "not_drivable": "the vehicle is reported as not drivable",
     "theft": "the loss is a theft",
     "repair_amount_conflict": "a repair-amount discrepancy was supplied as a referral indicator",
+    "dangerous_content": "supplied document text may contain instructions to the system",
 }
+
+# The label is supplied text: keep it short and plain so it reads as a name, not a statement.
+_LABEL_UNSAFE = re.compile(r"[^A-Za-z0-9 _-]+")
+_LABEL_LIMIT = 40
 
 POLICY_REASON_TEXT = {
     "zero": "no policy interval contains the incident timestamp",
@@ -91,15 +97,27 @@ def build_draft(
     policy: dict[str, Any],
     route: dict[str, Any],
     citations: dict[str, Any],
+    evidence_summary: str | None = None,
+    safety_status: str = "skipped",
 ) -> dict[str, Any]:
-    """Build the contract object. Refuses restricted values before returning."""
+    """Build the contract object. Refuses restricted values before returning.
+
+    ``narrative`` is always the deterministic skeleton. ``evidence_summary`` is the
+    optional model slot; ``safety_status`` is skipped, passed, or fallback.
+    """
     facts_row = {key: facts_row.get(key) for key in FACT_COLUMNS}
     missing = [item for item in route.get("missing_information", []) if isinstance(item, str)]
     version = route.get("selected_policy_version")
+    if safety_status not in ("skipped", "passed", "fallback"):
+        raise ValueError("safety_status must be skipped, passed, or fallback")
+    if evidence_summary is not None and not isinstance(evidence_summary, str):
+        raise TypeError("evidence_summary must be a string or null")
     draft = {
         "case_id": case_id,
         "classification": route.get("classification"),
         "routing": route.get("route"),
+        # Copied from the route decision, which was set from the claims snapshot.
+        "duplicate_delivery": route.get("duplicate_delivery") is True,
         "policy_ids": _policy_ids(policy, citations),
         "facts": {
             "policy_number": facts_row["policy_number"],
@@ -115,9 +133,46 @@ def build_draft(
             {"field": field, "question": FOLLOW_UP[field]} for field in missing if field in FOLLOW_UP
         ],
         "narrative": _narrative(case_id, input_revision, facts_row, policy, route, citations),
+        "evidence_summary": evidence_summary,
+        "safety_status": safety_status,
     }
     assert_no_restricted(draft)
     return draft
+
+
+def _safe_label(label: Any) -> str:
+    text = _LABEL_UNSAFE.sub(" ", str(label or "")).strip()
+    text = " ".join(text.split())[:_LABEL_LIMIT].strip()
+    return text or "unnamed"
+
+
+def _content_check_notes(route: dict[str, Any]) -> list[str]:
+    """Name each extra field by source id and label. The supplied line is never repeated."""
+    if "dangerous_content" not in (route.get("reasons") or []):
+        return []
+    notes = []
+    for item in route.get("extra_fields") or []:
+        if not isinstance(item, dict):
+            continue
+        notes.append(
+            f"Content check: {item.get('source_id') or 'a supplied document'} has an unexpected "
+            f"field labelled \"{_safe_label(item.get('label'))}\". Its text was treated as "
+            "untrusted data and was not followed."
+        )
+    model = route.get("injection_model_status")
+    if model == "injection":
+        notes.append(
+            "Content check: the model screen flagged leftover document text as instructions. "
+            "That text was not followed."
+        )
+    elif model != "clean":
+        notes.append(
+            "Content check: the model screen of leftover document text did not complete, "
+            "so the text was not cleared. It was not followed."
+        )
+    if not notes:
+        notes.append("Content check: supplied document text was not cleared and was not followed.")
+    return notes
 
 
 def _narrative(case_id, input_revision, facts, policy, route, citations) -> str:
@@ -145,6 +200,7 @@ def _narrative(case_id, input_revision, facts, policy, route, citations) -> str:
         lines.append(
             "Urgency: injury or non-drivable vehicle is flagged for the handler regardless of route."
         )
+    lines.extend(_content_check_notes(route))
     if missing:
         lines.append("Missing information: " + ", ".join(missing) + ". See follow-up questions.")
     if conflicts:

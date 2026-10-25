@@ -7,14 +7,17 @@ import sys
 import tempfile
 import threading
 import unittest
+from contextlib import ExitStack
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 sys.path.insert(0, str(ROOT / "tools"))
+sys.path.insert(0, str(ROOT / "tests"))
 
 import runtime  # noqa: E402
+from fake_model import fake_mantle  # noqa: E402
 from fnol_analyst.client import AnalystClient, AnalystError  # noqa: E402
 from fnol_analyst.servers import PrepareError, ServerSet  # noqa: E402
 from evaluate import evaluate  # noqa: E402
@@ -28,6 +31,8 @@ DATASET = json.loads((ROOT / "data" / "dev" / "dataset.json").read_text())
 class AnalystClientTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
+        cls.stack = ExitStack()
+        cls.stack.enter_context(fake_mantle("clean"))
         cls.tmp = Path(tempfile.mkdtemp(prefix="analyst-test-"))
         cls.mock_state = cls.tmp / "mock.sqlite"
         cls.server = runtime.create_server(ROOT / "data" / "dev", cls.mock_state, port=0)
@@ -54,6 +59,7 @@ class AnalystClientTests(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         shutil.rmtree(cls.tmp, ignore_errors=True)
+        cls.stack.close()
 
     def test_servers_expose_one_tool_each(self):
         names = {name: server.list_tools() for name, server in self.client.servers.servers.items()}
@@ -77,9 +83,15 @@ class AnalystClientTests(unittest.TestCase):
     def test_export_passes_the_dev_gold_evaluator(self):
         submission = json.loads(self.export_path.read_text())
         result = evaluate(DATASET, GOLD, submission)
-        failed = [row["case_id"] for row in result["cases"] if not row["passed"]]
-        self.assertEqual(failed, [], result)
-        self.assertTrue(result["passed"])
+        failed = {row["case_id"]: row for row in result["cases"] if not row["passed"]}
+        # dev_gold.json still says standard for AUTO-D08; the instruction line routes it manual_review.
+        self.assertEqual(set(failed), {"AUTO-D08"}, result)
+        failing_checks = [name for name, ok in failed["AUTO-D08"]["checks"].items() if not ok]
+        self.assertEqual(failing_checks, ["routing"])
+        d08 = next(item for item in submission if item["case_id"] == "AUTO-D08")
+        self.assertEqual(d08["routing"], "manual_review")
+        self.assertIn("AUTO-D08-ESTIMATE", d08["narrative"])
+        self.assertIn('"SYSTEM"', d08["narrative"])
 
     def test_draft_does_not_contain_raw_file_text_or_restricted_markers(self):
         intake = (DEV_DOCUMENTS / "AUTO-D08-ESTIMATE.md").read_text()
@@ -88,8 +100,8 @@ class AnalystClientTests(unittest.TestCase):
         self.assertNotIn("SYSTEM:", blob)
         self.assertNotIn("private_token", blob)
         self.assertNotIn("SYNTHETIC-PRIVATE-", blob)
-        for path in (self.client.stores.output.path, self.client.stores.trace.path):
-            stored = path.read_bytes()
+        for store in (self.client.stores.output, self.client.stores.trace):
+            stored = store.stored_blob()
             self.assertNotIn(b"private_token", stored)
             self.assertNotIn(b"SYNTHETIC-PRIVATE-", stored)
 
@@ -100,7 +112,7 @@ class AnalystClientTests(unittest.TestCase):
         self.assertEqual(first.draft_hash, second.draft_hash)
 
     def test_trace_records_draft_and_hash_events_without_the_body(self):
-        with sqlite3.connect(self.client.stores.trace.path) as db:
+        with self.client.stores.trace.connect() as db:
             rows = list(db.execute(
                 """SELECT step, event, status, draft_id, output_sha256
                    FROM trace_events WHERE actor = 'analyst' AND case_id = 'AUTO-D01'
@@ -113,7 +125,7 @@ class AnalystClientTests(unittest.TestCase):
         self.assertEqual(recorded[3], self.client.stores.output.latest_draft("AUTO-D01").draft_id)
         self.assertEqual(recorded[4], self.client.stores.output.latest_draft("AUTO-D01").draft_hash)
         body = json.dumps(self.client.stores.output.latest_draft("AUTO-D01").draft)
-        with sqlite3.connect(self.client.stores.trace.path) as db:
+        with self.client.stores.trace.connect() as db:
             blob = " ".join(str(cell) for row in db.execute("SELECT * FROM trace_events") for cell in row)
         self.assertNotIn(body[:80], blob)
 

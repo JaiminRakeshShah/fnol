@@ -19,12 +19,13 @@ def _fields() -> StructuredFields:
         incident_location="Cedar",
         injury_reported=False,
         vehicle_drivable=True,
+        injection_field_status="clean",
+        injection_model_status="clean",
     )
 
 
 def _events(stores, case_id):
-    with sqlite3.connect(stores.trace.path) as db:
-        db.row_factory = sqlite3.Row
+    with stores.trace.connect() as db:
         return db.execute(
             """SELECT event, step, status, attempt, mock_http_status, input_revision, trace_id
                FROM trace_events WHERE case_id = ? ORDER BY rowid""",
@@ -72,7 +73,12 @@ def test_stores_canonical_claims_and_logs_attempts():
     assert decision["body"]["route"] == "standard"
     assert decision["claims_sha256"] == stored["sha256"]
     assert decision["policy_sha256"] == "policy-sha"
-    assert [row["event"] for row in events] == ["tool_read", "claims_stored", "route_decision"]
+    assert [row["event"] for row in events] == [
+        "tool_read",
+        "claims_stored",
+        "injection_check",
+        "route_decision",
+    ]
     assert events[0]["attempt"] == 1
     assert events[0]["mock_http_status"] == 200
     assert events[0]["input_revision"] == 1

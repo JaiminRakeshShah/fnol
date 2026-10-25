@@ -52,7 +52,11 @@ class InputServerTests(unittest.TestCase):
                     }]}),
                 ),
             )
-            self.assertTrue(Path(summary["input_sqlite"]).is_file())
+            location = summary["input_sqlite"]
+            if str(location).startswith("postgres:"):
+                self.assertIn("input", location)
+            else:
+                self.assertTrue(Path(location).is_file())
             self.assertEqual(summary["case_count"], 1)
             self.assertEqual(summary["revisions"], [{"case_id": "AUTO-D01", "revision": 1}])
 

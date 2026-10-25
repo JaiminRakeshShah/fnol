@@ -37,21 +37,13 @@ def file_sha256(data):
 
 
 def read_source(directory, source_id):
-    """Return (path, bytes, text) for a source file inside directory, or None."""
-    if not isinstance(source_id, str) or not source_id:
-        return None
-    if any(part in source_id for part in ("/", "\\", "..")):
-        return None
-    root = Path(directory).resolve()
-    path = (root / f"{source_id}.md").resolve()
-    if path.parent != root or not path.is_file():
-        return None
-    data = path.read_bytes()
-    try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError:
-        return None
-    return path, data, text
+    """Return (path, bytes, text) for a source file inside directory, or None.
+
+    Uses S3 or Azure Blob when configured; otherwise reads the local disk.
+    """
+    from fnol_foundation.blobs import read_source as _read
+
+    return _read(directory, source_id)
 
 
 def parse_document(text, labels):
@@ -134,14 +126,8 @@ def load_procedures(policies_dir):
 
     The stored record is the id and hash. Policy wording is not copied into the
     revision because the intake procedure names the restricted field marker.
+    Uses S3 when FNOL_S3_BUCKET is set.
     """
-    root = Path(policies_dir)
-    if not root.is_dir():
-        raise FileNotFoundError(f"policies directory does not exist: {policies_dir}")
-    sources = []
-    for path in sorted(root.glob("*.md")):
-        sources.append({
-            "source_id": path.stem,
-            "sha256": file_sha256(path.read_bytes()),
-        })
-    return sources
+    from fnol_foundation.blobs import list_markdown_sources
+
+    return list_markdown_sources(policies_dir)

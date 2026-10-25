@@ -31,6 +31,8 @@ def test_unknown_booleans_are_not_coerced():
         "incident_location": "Cedar",
         "injury_reported": None,
         "vehicle_drivable": None,
+        "injection_field_status": "clean",
+        "injection_model_status": "clean",
     })
     assert fields.injury_reported is None
     assert fields.vehicle_drivable is None
@@ -54,6 +56,42 @@ def test_repeated_driver_name_is_a_conflict():
     result = route(fields, PolicyResult("2"), ClaimsSnapshot(available=True))
     assert result.route == "manual_review"
     assert result.conflicts == ["driver_name"]
+
+
+def test_injection_verdicts_and_extra_fields_pass_through():
+    fields = fields_from_payload({
+        "loss_type": "collision",
+        "vehicle_id": "VEH-1",
+        "incident_timestamp": "2026-10-01T12:00:00Z",
+        "driver_name": "Alex",
+        "incident_location": "Cedar",
+        "injury_reported": False,
+        "vehicle_drivable": True,
+        "extra_fields": [{"source_id": "AUTO-D08-ESTIMATE", "label": "SYSTEM"}],
+        "injection_field_status": "injection",
+        "injection_model_status": "clean",
+    })
+    assert fields.injection_field_status == "injection"
+    assert fields.injection_model_status == "clean"
+    assert fields.extra_fields == ({"source_id": "AUTO-D08-ESTIMATE", "label": "SYSTEM"},)
+    result = route(fields, PolicyResult("2"), ClaimsSnapshot(available=True))
+    assert result.route == "manual_review"
+    assert "dangerous_content" in result.reasons
+
+
+def test_revision_without_verdicts_is_manual_review():
+    fields = fields_from_payload({
+        "loss_type": "collision",
+        "vehicle_id": "VEH-1",
+        "incident_timestamp": "2026-10-01T12:00:00Z",
+        "driver_name": "Alex",
+        "incident_location": "Cedar",
+        "injury_reported": False,
+        "vehicle_drivable": True,
+    })
+    result = route(fields, PolicyResult("2"), ClaimsSnapshot(available=True))
+    assert result.route == "manual_review"
+    assert result.reasons == ["dangerous_content"]
 
 
 def test_report_vehicle_conflict_manual_review():

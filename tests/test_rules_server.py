@@ -57,6 +57,8 @@ class RulesServerTests(unittest.TestCase):
                     "vehicle_drivable": True,
                     "referral_indicator": "none",
                     "loss_reference": "auto-loss-D01",
+                    "injection_field_status": "clean",
+                    "injection_model_status": "clean",
                 },
                 document_set_sha256="abc",
                 trace_id="trace-d01",

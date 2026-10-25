@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any, Callable
 
 from fnol_foundation.canonical import RestrictedValueError, digest
 from fnol_foundation.events import record_event
 from fnol_foundation.http import public_error
 from fnol_foundation.stores import Stores
+from fnol_intake.injection import CLEAN, INJECTION
 from fnol_rules.claims import ClaimsFetchResult, fetch_claims
 from fnol_rules.route import route
+from fnol_rules.screen import USE_DEFAULT, resolve_client, screen_fields
 from fnol_rules.types import RULE_VERSION, ClaimsSnapshot, PolicyResult, RouteResult, StructuredFields
 
 
@@ -39,8 +42,15 @@ def run_rules(
     trace_id: str,
     input_sha256: str | None = None,
     fetch: Callable[..., ClaimsFetchResult] | None = None,
+    payload: dict | None = None,
+    screen_client: Any = USE_DEFAULT,
 ) -> RouteResult:
-    """Fetch claims, persist the canonical payload, route, and store the decision."""
+    """Fetch claims, screen leftover text, route, and store the decision.
+
+    The model screen does not update the intake revision. A missing screen
+    or three failed calls is not clean, so the route is manual_review. The
+    trace records the outcome without the prompt or the line text.
+    """
     fetcher = fetch or fetch_claims
     result = fetcher(case_id, base_url)
     parent = None
@@ -102,6 +112,36 @@ def run_rules(
                 input_sha256=input_sha256,
             )
 
+    fields, verdict, check_ms = screen_fields(
+        fields, payload or {}, resolve_client(screen_client)
+    )
+    field_status = fields.injection_field_status
+    clean = field_status == CLEAN and verdict.status == CLEAN
+    error_code = verdict.error_code
+    if error_code is None and field_status == INJECTION:
+        error_code = "instruction_text"
+    parent = record_event(
+        stores,
+        trace_id=trace_id,
+        parent_span_id=parent,
+        step="3",
+        event="injection_check",
+        actor="rules",
+        rule_version=RULE_VERSION,
+        status="ok" if clean else "error",
+        error_code=None if clean else error_code,
+        case_id=case_id,
+        input_revision=input_revision,
+        model_id=verdict.model_id,
+        input_tokens=verdict.input_tokens,
+        output_tokens=verdict.output_tokens,
+        injection_field_status=field_status,
+        injection_model_status=verdict.status,
+        duration_ms=check_ms,
+        started_at=datetime.now(timezone.utc),
+        input_sha256=input_sha256,
+        attempt=verdict.attempt,
+    )
     routed = route(fields, policy, snapshot)
     body = asdict(routed)
     body["policy_sha256"] = policy.payload_sha256

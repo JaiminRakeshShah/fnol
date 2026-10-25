@@ -11,6 +11,7 @@ from typing import Any, Callable
 from fnol_foundation.stores import Stores, state_dir
 from fnol_rules.adapter import fields_from_payload
 from fnol_rules.claims import ClaimsFetchResult
+from fnol_rules.screen import USE_DEFAULT
 from fnol_rules.service import policy_from_decision, run_rules
 
 
@@ -26,6 +27,7 @@ def start_routing(
     mock_url: str | None = None,
     state_dir_path: str | Path | None = None,
     fetch: Callable[..., ClaimsFetchResult] | None = None,
+    screen_client: Any = USE_DEFAULT,
 ) -> dict[str, Any]:
     """Route latest intake revisions using the policy decision already stored for each one.
 
@@ -56,6 +58,8 @@ def start_routing(
             trace_id=revision.trace_id or uuid.uuid4().hex,
             input_sha256=revision.document_set_sha256,
             fetch=fetch,
+            payload=revision.payload,
+            screen_client=screen_client,
         )
         routed.append({
             "case_id": cid,
@@ -63,8 +67,8 @@ def start_routing(
             **asdict(result),
         })
     return {
-        "input_sqlite": str(stores.input.path.resolve()),
-        "trace_sqlite": str(stores.trace.path.resolve()),
+        "input_sqlite": stores.input.locator,
+        "trace_sqlite": stores.trace.locator,
         "case_count": len(routed),
         "routes": routed,
     }

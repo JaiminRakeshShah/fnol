@@ -1,8 +1,10 @@
-"""Local fictional enterprise simulator. Python 3.12+, standard library only."""
+"""Local fictional enterprise simulator. Python 3.12+.
+
+State is a SQLite file unless FNOL_DATABASE_URL (or RDS settings) select PostgreSQL.
+"""
 import argparse
 import hashlib
 import json
-import sqlite3
 import sys
 import uuid
 from datetime import datetime, timezone
@@ -10,6 +12,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+
+from fnol_foundation.db import UniqueViolation  # noqa: E402
 
 
 def canonical(value):
@@ -20,23 +26,43 @@ def digest(value):
     return hashlib.sha256(canonical(value).encode()).hexdigest()
 
 
+_MOCK_SCHEMA = """
+CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY, case_id TEXT,
+  draft TEXT, hash TEXT, status TEXT, reviewer TEXT);
+CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, case_id TEXT UNIQUE,
+  draft TEXT, review_id TEXT);
+CREATE TABLE IF NOT EXISTS keys(key TEXT PRIMARY KEY, hash TEXT, response TEXT);
+CREATE TABLE IF NOT EXISTS calls(case_id TEXT, tool TEXT, n INTEGER,
+  PRIMARY KEY(case_id, tool));
+CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT, event TEXT, case_id TEXT, detail TEXT);
+"""
+
+_REVIEW_COLUMNS = "id, case_id, draft, hash, status, reviewer"
+
+
 def connect(path):
+    """Open the mock state database (SQLite file, or the Postgres mock schema)."""
+    from fnol_foundation.db import open_db, using_postgres
+
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    db = sqlite3.connect(path, timeout=15)
-    db.row_factory = sqlite3.Row
-    db.executescript('''
-      CREATE TABLE IF NOT EXISTS reviews(id TEXT PRIMARY KEY, case_id TEXT,
-        draft TEXT, hash TEXT, status TEXT, reviewer TEXT);
-      CREATE TABLE IF NOT EXISTS records(id TEXT PRIMARY KEY, case_id TEXT UNIQUE,
-        draft TEXT, review_id TEXT);
-      CREATE TABLE IF NOT EXISTS keys(key TEXT PRIMARY KEY, hash TEXT, response TEXT);
-      CREATE TABLE IF NOT EXISTS calls(case_id TEXT, tool TEXT, n INTEGER,
-        PRIMARY KEY(case_id, tool));
-      CREATE TABLE IF NOT EXISTS audit(seq INTEGER PRIMARY KEY AUTOINCREMENT,
-        at TEXT, event TEXT, case_id TEXT, detail TEXT);
-    ''')
+    db = open_db(path, kind="mock")
+    if not using_postgres():
+        db.executescript(_MOCK_SCHEMA)
     return db
+
+
+def mock_state_present(path) -> bool:
+    """True when a read should open the mock database.
+
+    PostgreSQL has no file to stat. SQLite stays closed until the file exists
+    so a read does not create an empty database.
+    """
+    from fnol_foundation.db import using_postgres
+
+    if using_postgres():
+        return True
+    return Path(path).exists()
 
 
 def audit(db, event, case_id="", **detail):
@@ -74,7 +100,10 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
             parts = path.strip("/").split("/")
             if len(parts) == 3 and parts[:2] == ["v1", "reviews"]:
                 with connect(state) as db:
-                    row = db.execute("SELECT * FROM reviews WHERE id=?", (parts[2],)).fetchone()
+                    row = db.execute(
+                        f"SELECT {_REVIEW_COLUMNS} FROM reviews WHERE id=?",
+                        (parts[2],),
+                    ).fetchone()
                 return self.reply(200, dict(row)) if row else self.reply(404, {"error": "not_found"})
             if len(parts) == 3 and parts[:2] == ["v1", "records"]:
                 case = case_map.get(parts[2])
@@ -91,10 +120,14 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                 return self.reply(404, {"error": "not_found"})
             payload = case["tools"][tool]
             with connect(state) as db:
-                db.execute("BEGIN IMMEDIATE")
+                db.begin_immediate("mock-write")
                 row = db.execute("SELECT n FROM calls WHERE case_id=? AND tool=?", (cid, tool)).fetchone()
                 n = (row[0] if row else 0) + 1
-                db.execute("INSERT OR REPLACE INTO calls VALUES(?,?,?)", (cid, tool, n))
+                db.execute(
+                    """INSERT INTO calls (case_id, tool, n) VALUES (?,?,?)
+                       ON CONFLICT (case_id, tool) DO UPDATE SET n = excluded.n""",
+                    (cid, tool, n),
+                )
                 fault = case.get("faults", {}).get(tool)
                 fails = fault and (fault["failures"] == "always" or n <= fault["failures"])
                 audit(db, "tool_read", cid, tool=tool, attempt=n, status=503 if fails else 200)
@@ -122,8 +155,10 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                     return self.reply(400, {"error": "draft_case_id_required"})
                 rid = "rev_" + uuid.uuid4().hex[:12]
                 with connect(state) as db:
-                    db.execute("INSERT INTO reviews VALUES(?,?,?,?,?,?)",
-                               (rid, cid, canonical(draft), digest(draft), "pending", None))
+                    db.execute(
+                        f"INSERT INTO reviews ({_REVIEW_COLUMNS}) VALUES (?,?,?,?,?,?)",
+                        (rid, cid, canonical(draft), digest(draft), "pending", None),
+                    )
                     audit(db, "review_requested", cid, review_id=rid, draft_hash=digest(draft))
                 return self.reply(201, {"review_id": rid, "status": "pending", "draft_hash": digest(draft)})
             if self.path != "/v1/records":
@@ -142,7 +177,7 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                 return self.reply(400, {"error": "draft_case_mismatch"})
             fingerprint = digest({"case_id": cid, "draft": draft, "review_id": rid})
             with connect(state) as db:
-                db.execute("BEGIN IMMEDIATE")
+                db.begin_immediate("mock-write")
                 previous = db.execute("SELECT * FROM keys WHERE key=?", (key,)).fetchone()
                 if previous:
                     if previous["hash"] != fingerprint:
@@ -161,8 +196,15 @@ def create_server(data_dir, state, host="127.0.0.1", port=8765):
                     audit(db, "duplicate_prevented", cid, existing_record_id=logical)
                     return self.reply(409, {"error": "duplicate_case", "existing_record_id": logical})
                 response = {"record_id": logical, "case_id": cid, "status": "created", "review_id": rid}
-                db.execute("INSERT INTO records VALUES(?,?,?,?)", (logical, cid, canonical(draft), rid))
-                db.execute("INSERT INTO keys VALUES(?,?,?)", (key, fingerprint, canonical(response)))
+                try:
+                    db.execute("INSERT INTO records VALUES(?,?,?,?)", (logical, cid, canonical(draft), rid))
+                    db.execute("INSERT INTO keys VALUES(?,?,?)", (key, fingerprint, canonical(response)))
+                except UniqueViolation:
+                    existing = db.execute("SELECT * FROM records WHERE id=?", (logical,)).fetchone()
+                    if existing:
+                        audit(db, "duplicate_prevented", cid, existing_record_id=logical)
+                        return self.reply(409, {"error": "duplicate_case", "existing_record_id": logical})
+                    raise
                 audit(db, "record_created", cid, record_id=logical, review_id=rid,
                       draft_hash=digest(draft), reviewer=review["reviewer"])
             return self.reply(201, response)
@@ -201,7 +243,11 @@ def main():
     with connect(a.state) as db:
         if a.command in ["approve", "reject"]:
             status = "approved" if a.command == "approve" else "rejected"
-            row = db.execute("SELECT * FROM reviews WHERE id=?", (a.review_id,)).fetchone()
+            db.begin_immediate(f"review:{a.review_id}")
+            row = db.execute(
+                f"SELECT {_REVIEW_COLUMNS} FROM reviews WHERE id=?",
+                (a.review_id,),
+            ).fetchone()
             if not row or row["status"] != "pending":
                 sys.exit("Review must exist and be pending.")
             db.execute("UPDATE reviews SET status=?,reviewer=? WHERE id=?", (status, a.reviewer, a.review_id))
@@ -209,7 +255,11 @@ def main():
                   reviewer=a.reviewer, draft_hash=row["hash"])
             print(status)
         elif a.command == "pending":
-            print(json.dumps([dict(x) for x in db.execute("SELECT * FROM reviews WHERE status='pending'")], indent=2))
+            print(json.dumps([
+                dict(x) for x in db.execute(
+                    f"SELECT {_REVIEW_COLUMNS} FROM reviews WHERE status='pending'"
+                )
+            ], indent=2))
         elif a.command == "audit":
             print(json.dumps([dict(x) for x in db.execute("SELECT * FROM audit ORDER BY seq")], indent=2))
         elif a.command == "reset":

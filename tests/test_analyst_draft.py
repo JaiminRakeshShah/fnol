@@ -82,6 +82,8 @@ class DraftTests(unittest.TestCase):
         self.assertGreaterEqual(len(draft["narrative"]), 20)
         self.assertIn("draft", draft["narrative"].lower())
         self.assertFalse(draft["follow_up_questions"])
+        self.assertIsNone(draft["evidence_summary"])
+        self.assertEqual(draft["safety_status"], "skipped")
 
     def test_missing_fields_get_targeted_questions(self):
         draft = build_draft(
@@ -142,6 +144,20 @@ class DraftTests(unittest.TestCase):
             citations=_citations(),
         )
         self.assertEqual(draft["policy_ids"], [])
+
+    def test_duplicate_flag_does_not_change_route(self):
+        draft = build_draft(
+            case_id="AUTO-D10",
+            input_revision=1,
+            facts_row={"policy_number": "PA-D09", "incident_timestamp": "2026-10-01T12:00:00Z",
+                       "vehicle_id": "VEH-D09", "loss_type": "glass", "referral_indicator": "none"},
+            policy=_policy(policy_ids=["AUTO-TRIAGE-01", "AUTO-WORDING-V2", "AUTO-END-GLASS-01"]),
+            route=_route(classification="glass", duplicate_delivery=True),
+            citations=_citations(),
+        )
+        self.assertEqual(draft["routing"], "standard")
+        self.assertTrue(draft["duplicate_delivery"])
+        self.assertIn("duplicate intake delivery yes", draft["narrative"])
 
     def test_restricted_marker_is_refused(self):
         with self.assertRaises(RestrictedValueError):

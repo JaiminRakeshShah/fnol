@@ -1,12 +1,16 @@
 """Command line for the analyst client.
 
-  ingest    step 1 through the intake server
-  policy    step 2 through the policy server (optional --case-id)
-  route     step 3 through the rules server (optional --case-id)
-  cite      step 4 through the citations server (optional --case-id)
-  prepare   steps 1-4, then build and export every draft
-  build     steps 5 and 8 for one case or all cases
-  export    write the contract JSON array
+  ingest         step 1 through the intake server
+  policy         step 2 through the policy server (optional --case-id)
+  route          step 3 through the rules server (optional --case-id)
+  cite           step 4 through the citations server (optional --case-id)
+  prepare        steps 1-4, then build and export every draft
+  build          steps 5-8 for one case or all cases
+  export         write the contract JSON array
+  submit         step 9: POST /v1/reviews for a stored draft
+  review-status  step 10: poll the human decision (never approves)
+  edit           local edit: new draft_id; old approval is void
+  file           steps 11-12: duplicate check then POST /v1/records
 """
 
 from __future__ import annotations
@@ -45,6 +49,18 @@ def main(argv=None) -> int:
     build.add_argument("--case-id", default=None)
     export = sub.add_parser("export")
     export.add_argument("--out", default="submissions/results.json")
+
+    submit = sub.add_parser("submit")
+    submit.add_argument("--case-id", required=True)
+    review_status = sub.add_parser("review-status")
+    review_status.add_argument("--case-id", required=True)
+    edit = sub.add_parser("edit")
+    edit.add_argument("--case-id", required=True)
+    edit.add_argument("--narrative", default=None)
+    edit.add_argument("--evidence-summary", default=None)
+    edit.add_argument("--clear-evidence-summary", action="store_true")
+    file_cmd = sub.add_parser("file")
+    file_cmd.add_argument("--case-id", required=True)
 
     args = parser.parse_args(argv)
     client = AnalystClient(
@@ -91,11 +107,48 @@ def _run(client: AnalystClient, args) -> int:
     if args.command == "build":
         drafts = [client.build(args.case_id)] if args.case_id else client.build_all()
         _print([
-            {"draft_id": d.draft_id, "case_id": d.case_id, "draft_hash": d.draft_hash, "status": d.status}
+            {
+                "draft_id": d.draft_id,
+                "case_id": d.case_id,
+                "draft_hash": d.draft_hash,
+                "status": d.status,
+                "safety_status": d.draft.get("safety_status"),
+            }
             for d in drafts
         ])
         return 0
     if args.command == "export":
         print(str(client.export(args.out)))
+        return 0
+    if args.command == "submit":
+        record = client.submit(args.case_id)
+        _print({
+            "draft_id": record.draft_id,
+            "case_id": record.case_id,
+            "draft_hash": record.draft_hash,
+            "status": record.status,
+            "review_id": record.review_id,
+            "outcome": record.outcome,
+        })
+        return 0
+    if args.command == "review-status":
+        _print(client.review_status(args.case_id))
+        return 0
+    if args.command == "edit":
+        record = client.edit(
+            args.case_id,
+            narrative=args.narrative,
+            evidence_summary=args.evidence_summary,
+            clear_evidence_summary=args.clear_evidence_summary,
+        )
+        _print({
+            "draft_id": record.draft_id,
+            "case_id": record.case_id,
+            "draft_hash": record.draft_hash,
+            "status": record.status,
+        })
+        return 0
+    if args.command == "file":
+        _print(client.file(args.case_id))
         return 0
     return 2

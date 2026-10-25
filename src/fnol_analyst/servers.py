@@ -8,6 +8,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any
 
+from fnol_analyst.http_steps import HttpStepClient, step_urls
 from fnol_analyst.mcp import StdioServer
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -31,6 +32,10 @@ _ROW_KEYS = {
 }
 
 
+def http_transport() -> bool:
+    return os.environ.get("FNOL_STEP_TRANSPORT", "").strip().lower() == "http"
+
+
 class PrepareError(RuntimeError):
     """One or more cases failed during prepare_all. Successful cases stay recorded."""
 
@@ -42,7 +47,7 @@ class PrepareError(RuntimeError):
 
 
 class ServerSet:
-    """Spawns the four stdio servers with a shared state directory and mock URL."""
+    """Spawns the four stdio servers, or calls their HTTP peers when configured."""
 
     def __init__(
         self,
@@ -53,6 +58,13 @@ class ServerSet:
         policies_dir: Path | None = None,
         python: str | None = None,
     ):
+        self._http = http_transport()
+        if self._http:
+            urls = step_urls()
+            self.servers = {
+                name: HttpStepClient(name, urls[name]) for name in SERVER_FILES
+            }
+            return
         env = dict(os.environ)
         env["FNOL_STATE_DIR"] = str(state_dir)
         env["FNOL_MOCK_URL"] = mock_url
