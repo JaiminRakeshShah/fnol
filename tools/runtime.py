@@ -240,6 +240,7 @@ def main():
         finally:
             server.server_close()
         return
+    decided_case = None
     with connect(a.state) as db:
         if a.command in ["approve", "reject"]:
             status = "approved" if a.command == "approve" else "rejected"
@@ -254,6 +255,7 @@ def main():
             audit(db, "human_" + status, row["case_id"], review_id=a.review_id,
                   reviewer=a.reviewer, draft_hash=row["hash"])
             print(status)
+            decided_case = row["case_id"]
         elif a.command == "pending":
             print(json.dumps([
                 dict(x) for x in db.execute(
@@ -266,6 +268,9 @@ def main():
             for table in ["reviews", "records", "keys", "calls", "audit"]:
                 db.execute(f"DELETE FROM {table}")
             print("Reset local mock state. Stop all clients before resetting.")
+    if a.command in ["approve", "reject"] and decided_case:
+        from fnol_analyst.follow import notify_analyst
+        notify_analyst(decided_case)
 
 
 if __name__ == "__main__":

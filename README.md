@@ -140,14 +140,12 @@ uv run --locked python tools/runtime.py audit > reports/audit.json
 Replace REVIEW_ID with the returned identifier. Create `reports/` before redirecting the audit. To reject, use `reject` with the same arguments. For a fresh run, stop clients and use `uv run --locked python tools/runtime.py reset --confirm`.
 This CLI simulates a human boundary, not production identity. During assessment the assessor controls approval and state. Do not expose the service to the public internet.
 
-### Harborlight FNOL Desk (optional UI)
+### Reviewer page
 
-After the mock is running and at least one draft exists under `.state/`, start the internal review desk on loopback. Point `--mock-state` at the same SQLite file the mock was started with (default `.state/mock.sqlite`):
+The human screen is the reviewer service. It lists each pending draft, the deterministic narrative, and the Gemma summary. The name typed on the page is the name stored on the decision. Locally:
 
 ```sh
-uv run --locked python -m fnol_desk
-# or, if the mock uses a non-default state file:
-# uv run --locked python -m fnol_desk --mock-state .state/e2e/mock.sqlite
+uv run --locked python server/reviewer.py
 ```
 
-Open `http://127.0.0.1:8780/`. Training accounts (local only): `achen` / `handler-desk` (Handlers), `jellis` / `analyst-desk` (Analysts), `rokonkwo` / `security-desk` (Security). Only handlers can accept or reject a pending review bound to the exact draft hash. Analysts can send a draft into review. The desk does not replace the operator CLI.
+Open `http://127.0.0.1:8090/`. On AWS the same page listens on port 8090 inside the private network.

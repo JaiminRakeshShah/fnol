@@ -687,6 +687,25 @@ class OutputStore(_Store):
             row = db.execute("SELECT * FROM drafts WHERE draft_id = ?", (draft_id,)).fetchone()
         return None if row is None else self._record(row)
 
+    def in_review(self):
+        """Drafts that have been sent to a human and not copied forward yet."""
+        with self._conn() as db:
+            rows = db.execute(
+                """SELECT * FROM drafts WHERE status = 'in_review'
+                   ORDER BY created_at"""
+            ).fetchall()
+        return [self._record(row) for row in rows]
+
+    def approved_unfiled(self):
+        """Approvals copied onto the draft, with the claim record not filed yet."""
+        with self._conn() as db:
+            rows = db.execute(
+                """SELECT * FROM drafts
+                   WHERE status = 'approved' AND outcome = 'approved'
+                   ORDER BY created_at"""
+            ).fetchall()
+        return [self._record(row) for row in rows]
+
     def latest_draft(self, case_id):
         """Most recently recorded draft for this case, or None."""
         with self._conn() as db:

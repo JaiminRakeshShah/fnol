@@ -138,7 +138,7 @@ aws cloudformation deploy \
   --capabilities CAPABILITY_NAMED_IAM
 ```
 
-6. Run the migrate task once, from the app subnets, using `fnol-tasks`. It connects with IAM as `fnol_migrate` (`FNOL_RDS_IAM_AUTH=1`, `FNOL_RDS_HOST` set to the instance endpoint). It applies `deploy/aws/sql/postgres/*.sql` and records versions in `public.fnol_schema_migrations`. That creates schemas `input`, `output`, `trace`, `mock`, and `desk`, and login roles `fnol_intake`, `fnol_policy`, `fnol_rules`, `fnol_citations`, `fnol_analyst`, `fnol_enterprise`, `fnol_reviewer`, `fnol_desk`, and `fnol_migrate`. On RDS those roles are granted `rds_iam`. Service tasks only check that the ledger already lists every file. They do not create `public.fnol_schema_migrations`.
+6. Run the migrate task once, from the app subnets, using `fnol-tasks`. It connects with IAM as `fnol_migrate` (`FNOL_RDS_IAM_AUTH=1`, `FNOL_RDS_HOST` set to the instance endpoint). It applies `deploy/aws/sql/postgres/*.sql` and records versions in `public.fnol_schema_migrations`. That creates schemas `input`, `output`, `trace`, and `mock`. Login roles are `fnol_intake`, `fnol_policy`, `fnol_rules`, `fnol_citations`, `fnol_analyst`, `fnol_enterprise`, `fnol_reviewer`, and `fnol_migrate`. On RDS those roles are granted `rds_iam`. Service tasks only check that the ledger already lists every file. They do not create `public.fnol_schema_migrations`.
 
 `008_migrate_role.sql` creates `fnol_migrate` and grants it `CREATE` on schema `public` plus `INSERT` on the ledger. Service roles get `SELECT` only. The role cannot exist until that file runs, so apply it once as the RDS master user: override the migrate container with `FNOL_DB_SECRET_ARN` set to the managed secret. Leave `FNOL_RDS_HOST` as the database endpoint. The secret stores the username and password and has no host; `secret_host` uses `FNOL_RDS_HOST`. The `fnol-migrate` role may read that secret for this override. After `fnol_migrate` exists, run the task with no override so it signs in with IAM. Do not put the secret on the service tasks.
 
@@ -190,7 +190,7 @@ FNOL_RDS_USER=fnol_<service>
 FNOL_PG_NAMESPACE=shared
 ```
 
-`FNOL_RDS_USER` is `fnol_intake`, `fnol_policy`, `fnol_rules`, `fnol_citations`, `fnol_analyst`, `fnol_enterprise`, or `fnol_reviewer`. The reviewer service connects as `fnol_reviewer`. The reviewer role may also connect as `fnol_desk`. The desk is not one of the seven services. Leave `FNOL_DATABASE_URL` unset. The process builds a short-lived IAM token and connects with `sslmode=require`. With `FNOL_PG_NAMESPACE=shared`, `FNOL_STATE_DIR` is not used to choose a schema.
+`FNOL_RDS_USER` is `fnol_intake`, `fnol_policy`, `fnol_rules`, `fnol_citations`, `fnol_analyst`, `fnol_enterprise`, or `fnol_reviewer`. The reviewer service connects as `fnol_reviewer` and serves the pending-cases page on port 8090. Leave `FNOL_DATABASE_URL` unset. The process builds a short-lived IAM token and connects with `sslmode=require`. With `FNOL_PG_NAMESPACE=shared`, `FNOL_STATE_DIR` is not used to choose a schema.
 
 `FNOL_STATE_DIR` remains `/mnt/state` while the volume is mounted. Enterprise and reviewer keep `FNOL_MOCK_STATE=/mnt/state/mock.sqlite` for that window. Those paths are ignored for the connection once `FNOL_RDS_HOST` is set.
 

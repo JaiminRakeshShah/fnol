@@ -25,6 +25,11 @@ Parameters:
     Default: db-3NRAPMWGKZYG5XXXFZLDTL3VIM
     AllowedPattern: "db-[A-Z0-9]+"
     Description: DbiResourceId of fnol-postgres. Used only in the rds-db:connect ARN.
+  TaskSecurityGroupId:
+    Type: String
+    Default: sg-0902a6085d45388f5
+    AllowedPattern: "sg-[0-9a-f]+"
+    Description: fnol-tasks. The tunnel may open the reviewer page on port 8090.
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-arm64
@@ -43,6 +48,11 @@ Resources:
           DestinationSecurityGroupId: !Ref DatabaseSecurityGroupId
           Description: Postgres only
         - IpProtocol: tcp
+          FromPort: 8090
+          ToPort: 8090
+          DestinationSecurityGroupId: !Ref TaskSecurityGroupId
+          Description: Reviewer page only
+        - IpProtocol: tcp
           FromPort: 443
           ToPort: 443
           CidrIp: 0.0.0.0/0
@@ -50,6 +60,16 @@ Resources:
       Tags:
         - Key: Name
           Value: fnol-dashboard-tunnel
+
+  ReviewerIngressFromTunnel:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !Ref TaskSecurityGroupId
+      IpProtocol: tcp
+      FromPort: 8090
+      ToPort: 8090
+      SourceSecurityGroupId: !Ref TunnelSecurityGroup
+      Description: Reviewer page from the dashboard tunnel only
 
   PostgresIngressFromTunnel:
     Type: AWS::EC2::SecurityGroupIngress

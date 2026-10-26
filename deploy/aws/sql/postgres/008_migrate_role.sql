@@ -46,5 +46,4 @@ GRANT SELECT ON public.fnol_schema_migrations TO
   fnol_citations,
   fnol_analyst,
   fnol_enterprise,
-  fnol_reviewer,
-  fnol_desk;
+  fnol_reviewer;

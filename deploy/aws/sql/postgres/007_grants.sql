@@ -25,9 +25,6 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fnol_reviewer') THEN
     CREATE ROLE fnol_reviewer LOGIN;
   END IF;
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'fnol_desk') THEN
-    CREATE ROLE fnol_desk LOGIN;
-  END IF;
 END
 $$;
 
@@ -41,7 +38,6 @@ BEGIN
     GRANT rds_iam TO fnol_analyst;
     GRANT rds_iam TO fnol_enterprise;
     GRANT rds_iam TO fnol_reviewer;
-    GRANT rds_iam TO fnol_desk;
   END IF;
 END
 $$;
@@ -53,7 +49,7 @@ DECLARE
 BEGIN
   FOREACH role_name IN ARRAY ARRAY[
     'fnol_intake', 'fnol_policy', 'fnol_rules', 'fnol_citations',
-    'fnol_analyst', 'fnol_enterprise', 'fnol_reviewer', 'fnol_desk'
+    'fnol_analyst', 'fnol_enterprise', 'fnol_reviewer'
   ]
   LOOP
     EXECUTE format('GRANT CONNECT ON DATABASE %I TO %I', dbname, role_name);
@@ -61,25 +57,24 @@ BEGIN
 END
 $$;
 
-GRANT USAGE ON SCHEMA {{input}} TO fnol_intake, fnol_policy, fnol_rules, fnol_citations, fnol_analyst, fnol_desk;
-GRANT USAGE ON SCHEMA {{output}} TO fnol_analyst, fnol_desk, fnol_reviewer;
+GRANT USAGE ON SCHEMA {{input}} TO fnol_intake, fnol_policy, fnol_rules, fnol_citations, fnol_analyst;
+GRANT USAGE ON SCHEMA {{output}} TO fnol_analyst, fnol_reviewer;
 GRANT USAGE ON SCHEMA {{trace}} TO fnol_intake, fnol_policy, fnol_rules, fnol_citations, fnol_analyst;
-GRANT USAGE ON SCHEMA {{mock}} TO fnol_enterprise, fnol_reviewer, fnol_desk;
-GRANT USAGE ON SCHEMA {{desk}} TO fnol_desk;
+GRANT USAGE ON SCHEMA {{mock}} TO fnol_enterprise, fnol_reviewer;
 
 GRANT SELECT, INSERT ON {{input}}.input_revisions TO fnol_intake;
-GRANT SELECT ON {{input}}.input_revisions TO fnol_policy, fnol_rules, fnol_citations, fnol_analyst, fnol_desk;
+GRANT SELECT ON {{input}}.input_revisions TO fnol_policy, fnol_rules, fnol_citations, fnol_analyst;
 
 GRANT SELECT, INSERT, DELETE ON {{input}}.procedure_sources TO fnol_intake;
-GRANT SELECT ON {{input}}.procedure_sources TO fnol_policy, fnol_rules, fnol_citations, fnol_analyst, fnol_desk;
+GRANT SELECT ON {{input}}.procedure_sources TO fnol_policy, fnol_rules, fnol_citations, fnol_analyst;
 
 GRANT SELECT, INSERT ON {{input}}.tool_payloads TO fnol_policy, fnol_rules;
-GRANT SELECT ON {{input}}.tool_payloads TO fnol_intake, fnol_citations, fnol_analyst, fnol_desk;
+GRANT SELECT ON {{input}}.tool_payloads TO fnol_intake, fnol_citations, fnol_analyst;
 
 GRANT SELECT, INSERT ON {{input}}.decisions TO fnol_policy, fnol_rules, fnol_citations;
-GRANT SELECT ON {{input}}.decisions TO fnol_intake, fnol_analyst, fnol_desk;
+GRANT SELECT ON {{input}}.decisions TO fnol_intake, fnol_analyst;
 
-GRANT SELECT, INSERT, UPDATE ON {{output}}.drafts TO fnol_analyst, fnol_desk;
+GRANT SELECT, INSERT, UPDATE ON {{output}}.drafts TO fnol_analyst;
 GRANT SELECT ON {{output}}.drafts TO fnol_reviewer;
 
 GRANT SELECT, INSERT ON {{trace}}.trace_events TO fnol_intake, fnol_policy, fnol_rules, fnol_citations, fnol_analyst;
@@ -87,14 +82,11 @@ GRANT SELECT, INSERT ON {{trace}}.trace_events TO fnol_intake, fnol_policy, fnol
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   {{mock}}.reviews, {{mock}}.records, {{mock}}.keys, {{mock}}.calls, {{mock}}.audit
   TO fnol_enterprise;
-GRANT SELECT, UPDATE ON {{mock}}.reviews TO fnol_reviewer, fnol_desk;
-GRANT SELECT, INSERT ON {{mock}}.audit TO fnol_reviewer, fnol_desk;
-GRANT SELECT ON {{mock}}.records, {{mock}}.keys, {{mock}}.calls TO fnol_reviewer, fnol_desk;
-
-GRANT SELECT, INSERT, UPDATE, DELETE ON {{desk}}.users, {{desk}}.sessions TO fnol_desk;
+GRANT SELECT, UPDATE ON {{mock}}.reviews TO fnol_reviewer;
+GRANT SELECT, INSERT ON {{mock}}.audit TO fnol_reviewer;
+GRANT SELECT ON {{mock}}.records, {{mock}}.keys, {{mock}}.calls TO fnol_reviewer;
 
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {{input}} TO fnol_intake, fnol_policy, fnol_rules, fnol_citations;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {{output}} TO fnol_analyst, fnol_desk;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {{output}} TO fnol_analyst;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {{trace}} TO fnol_intake, fnol_policy, fnol_rules, fnol_citations, fnol_analyst;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {{mock}} TO fnol_enterprise, fnol_reviewer, fnol_desk;
-GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {{desk}} TO fnol_desk;
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA {{mock}} TO fnol_enterprise, fnol_reviewer;

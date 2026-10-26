@@ -22,6 +22,7 @@ if str(ROOT) not in sys.path:
 if str(ROOT / "src") not in sys.path:
     sys.path.insert(0, str(ROOT / "src"))
 
+from server.review_page import PAGE, queue_rows  # noqa: E402
 from tools.runtime import audit, connect  # noqa: E402
 
 REQUIRED_ROLE = "Claims.Reviewer"
@@ -85,6 +86,14 @@ def create_server(host: str = "0.0.0.0", port: int = 8090, state: Path | None = 
             self.end_headers()
             self.wfile.write(raw)
 
+        def _html(self, status: int, text: str):
+            raw = text.encode("utf-8")
+            self.send_response(status)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
         def _authorized(self) -> bool:
             if not require_role:
                 return True
@@ -95,8 +104,16 @@ def create_server(host: str = "0.0.0.0", port: int = 8090, state: Path | None = 
             if path == "/health":
                 self._json(200, {"status": "ok", "service": "reviewer"})
                 return
+            if path in {"/", "/review"}:
+                self._html(200, PAGE)
+                return
             if not self._authorized():
                 self._json(403, {"error": "forbidden", "required_role": REQUIRED_ROLE})
+                return
+            if path == "/v1/queue":
+                with connect(state_path) as db:
+                    rows = queue_rows(db)
+                self._json(200, rows)
                 return
             if path == "/v1/pending":
                 with connect(state_path) as db:
@@ -144,6 +161,9 @@ def create_server(host: str = "0.0.0.0", port: int = 8090, state: Path | None = 
                         reviewer=reviewer,
                         draft_hash=row["hash"],
                     )
+                    decided_case = row["case_id"]
+                from fnol_analyst.follow import notify_analyst
+                notify_analyst(decided_case)
                 self._json(200, {"status": status, "review_id": review_id, "reviewer": reviewer})
                 return
             self._json(404, {"error": "not_found"})

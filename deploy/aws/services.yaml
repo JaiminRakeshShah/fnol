@@ -626,7 +626,7 @@ Resources:
             - UsePostgres
             - - /bin/sh
               - -c
-              - uv run --locked --group aws --group postgres --no-dev python -c "import psycopg; from fnol_foundation.db import ensure_ready; ensure_ready()" && exec sleep infinity
+              - uv run --locked --group aws --group postgres --no-dev python -c "import psycopg; from fnol_foundation.db import ensure_ready; ensure_ready()" && exec uv run --locked --group aws --group postgres --no-dev python -m fnol_analyst.follow
             - - sleep
               - infinity
           Environment:
@@ -652,6 +652,8 @@ Resources:
             Value: !Sub http://citations.${DnsNamespace}:8080
           - Name: FNOL_MOCK_URL
             Value: !Sub http://enterprise.${DnsNamespace}:8767
+          - Name: FNOL_HTTP_PORT
+            Value: "8080"
           - Name: FNOL_STATE_DIR
             Value: !If [MountStateVolume, "/mnt/state", "/tmp/fnol-state"]
           - !If
@@ -684,6 +686,9 @@ Resources:
             - Name: FNOL_PG_NAMESPACE
               Value: !Ref PgNamespace
             - !Ref AWS::NoValue
+          PortMappings:
+            - ContainerPort: 8080
+              Protocol: tcp
           MountPoints:
             - !If
               - MountStateVolume
@@ -691,6 +696,14 @@ Resources:
                 ContainerPath: /mnt/state
                 ReadOnly: false
               - !Ref AWS::NoValue
+          HealthCheck:
+            Command:
+              - CMD-SHELL
+              - python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health', timeout=3)"
+            Interval: 30
+            Timeout: 5
+            Retries: 3
+            StartPeriod: 60
           LogConfiguration:
             LogDriver: awslogs
             Options:
@@ -880,6 +893,8 @@ Resources:
           Environment:
           - Name: AWS_REGION
             Value: !Ref AWS::Region
+          - Name: FNOL_ANALYST_URL
+            Value: !Sub http://analyst.${DnsNamespace}:8080
           - Name: FNOL_MOCK_STATE
             Value: !If [MountStateVolume, "/mnt/state/mock.sqlite", "/tmp/fnol-state/mock.sqlite"]
           - !If
