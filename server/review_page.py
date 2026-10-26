@@ -62,8 +62,13 @@ def _stored_drafts(hashes: list[str]) -> dict[str, dict]:
     return {row["draft_hash"]: dict(row) for row in rows}
 
 
-def _gemma_paragraphs(case_ids: list[str]) -> dict[tuple[str, int], str]:
-    """Newest Gemma paragraph for each (case_id, input_revision)."""
+def _gemma_paragraphs(case_ids: list[str]) -> tuple[dict[tuple[str, int], str], dict[str, str], dict[str, str]]:
+    """Gemma paragraphs from the trace.
+
+    A paragraph recorded with an input revision is kept for that revision.
+    A paragraph recorded without one is kept for the case. The newest
+    paragraph for the case is the fallback when the review's revision is unknown.
+    """
     rows = _store_rows(
         "trace",
         f"""SELECT case_id, input_revision, shadow_narrative FROM trace_events
@@ -71,12 +76,36 @@ def _gemma_paragraphs(case_ids: list[str]) -> dict[tuple[str, int], str]:
             ORDER BY started_at, rowid""",
         case_ids,
     )
-    found = {}
+    by_revision: dict[tuple[str, int], str] = {}
+    unscoped: dict[str, str] = {}
+    newest: dict[str, str] = {}
     for row in rows:
         text = _text(row["shadow_narrative"])
-        if text is not None and row["input_revision"] is not None:
-            found[(row["case_id"], int(row["input_revision"]))] = text
-    return found
+        case_id = row["case_id"]
+        if text is None or not case_id:
+            continue
+        newest[case_id] = text
+        revision = row["input_revision"]
+        if revision is None:
+            unscoped[case_id] = text
+        else:
+            by_revision[(case_id, int(revision))] = text
+    return by_revision, unscoped, newest
+
+
+def _gemma_for(review_case: str, revision, paragraphs) -> str | None:
+    by_revision, unscoped, newest = paragraphs
+    if revision is not None:
+        matched = by_revision.get((review_case, int(revision)))
+        if matched is not None:
+            return matched
+    # A summary written without a revision still belongs to the case.
+    # A different revision's summary does not.
+    if review_case in unscoped:
+        return unscoped[review_case]
+    if revision is None:
+        return newest.get(review_case)
+    return None
 
 
 def queue_rows(db) -> list[dict]:
@@ -104,9 +133,7 @@ def queue_rows(db) -> list[dict]:
                 "evidence_summary": _text(body.get("evidence_summary")),
                 "draft_status": record.get("status"),
                 "outcome": record.get("outcome"),
-                "shadow_narrative": (
-                    gemma.get((review["case_id"], int(revision))) if revision is not None else None
-                ),
+                "shadow_narrative": _gemma_for(review["case_id"], revision, gemma),
             }
         )
     return rows

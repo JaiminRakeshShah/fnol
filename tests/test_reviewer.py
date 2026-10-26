@@ -149,6 +149,38 @@ class ReviewerHttpTests(unittest.TestCase):
 
         self.assertEqual(self._queue()["rev_1"]["shadow_narrative"], "Summary of revision one.")
 
+    def test_gemma_paragraph_without_a_revision_is_shown(self):
+        record_event(
+            Stores(self.state_dir),
+            trace_id="trace-1",
+            step="6",
+            event="shadow_summary",
+            actor="shadow",
+            status="ok",
+            case_id="AUTO-D01",
+            shadow_narrative="Handler summary with no revision recorded.",
+        )
+        self.assertEqual(
+            self._queue()["rev_1"]["shadow_narrative"],
+            "Handler summary with no revision recorded.",
+        )
+
+    def test_gemma_paragraph_from_another_revision_is_not_substituted(self):
+        stores = Stores(self.state_dir)
+        stores.output.record_draft("AUTO-D01", _draft("Original text."), input_revision=1)
+        record_event(
+            stores,
+            trace_id="trace-1",
+            step="6",
+            event="shadow_summary",
+            actor="shadow",
+            status="ok",
+            case_id="AUTO-D01",
+            input_revision=2,
+            shadow_narrative="Summary of a later revision.",
+        )
+        self.assertIsNone(self._queue()["rev_1"]["shadow_narrative"])
+
     def test_queue_is_newest_first(self):
         self._add_review("rev_9", _draft("Later review.", case_id="AUTO-D02"))
         status, rows = self._request("GET", "/v1/queue")
