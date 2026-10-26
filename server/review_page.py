@@ -1,144 +1,139 @@
-"""One page for a human to accept or reject pending drafts."""
+"""One page for a human to accept or reject pending drafts.
+
+Each row shows the draft stored on the review itself, because that exact
+object is what Accept approves. The output store only adds the analyst's
+status for the same draft hash, and the trace adds Gemma's paragraph for the
+same input revision. Gemma's paragraph is reference text and is never part of
+the approved draft.
+"""
 
 from __future__ import annotations
 
 import json
+import sys
+from pathlib import Path
 
-from fnol_foundation.db import open_db
+from fnol_foundation.db import open_db, using_postgres
 from fnol_foundation.stores import state_dir
 
-PAGE = """<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<title>FNOL reviewer</title>
-<style>
-  body { font-family: sans-serif; margin: 24px; color: #1a1a1a; background: #f6f6f4; }
-  h1 { font-size: 22px; font-weight: 600; }
-  label { display: block; margin: 12px 0 4px; }
-  input { font: inherit; padding: 6px 8px; width: 240px; }
-  article { background: #fff; border: 1px solid #ccc; padding: 16px; margin: 16px 0; }
-  .row { display: flex; gap: 8px; margin-top: 12px; }
-  button { font: inherit; padding: 6px 12px; }
-  pre { white-space: pre-wrap; background: #f0f0ec; padding: 8px; }
-  .meta { color: #444; }
-</style>
-</head>
-<body>
-<h1>Pending cases</h1>
-<label for="name">Reviewer name</label>
-<input id="name" value="">
-<div id="list">Loading…</div>
-<script>
-const headers = () => ({
-  "Content-Type": "application/json",
-  "X-Fnol-Roles": "Claims.Reviewer",
-  "X-Fnol-Reviewer": document.getElementById("name").value.trim() || "reviewer"
-});
-function block(title, text) {
-  return "<h3>" + title + "</h3><pre>" + (text || "None yet.") + "</pre>";
-}
-async function load() {
-  const response = await fetch("/v1/queue", { headers: headers() });
-  const rows = await response.json();
-  const root = document.getElementById("list");
-  root.innerHTML = "";
-  if (!rows.length) {
-    root.textContent = "No cases.";
-    return;
-  }
-  for (const row of rows) {
-    const card = document.createElement("article");
-    const pending = row.status === "pending";
-    card.innerHTML =
-      "<h2>" + row.case_id + "</h2>" +
-      "<p class='meta'>Review " + row.review_id + " · " + row.status +
-      (row.reviewer ? " · " + row.reviewer : "") +
-      (row.draft_status ? " · draft " + row.draft_status : "") +
-      (row.outcome ? " · " + row.outcome : "") + "</p>" +
-      "<p class='meta'>" + (row.classification || "—") + " · " + (row.routing || "—") + "</p>" +
-      block("Deterministic draft", row.narrative) +
-      block("Gemma summary", row.shadow_narrative) +
-      (pending ? "<div class='row'><button data-act='approve'>Accept</button><button data-act='reject'>Reject</button></div>" : "");
-    if (pending) {
-      card.querySelectorAll("button").forEach((button) => {
-        button.onclick = async () => {
-          const name = document.getElementById("name").value.trim();
-          if (!name) { alert("Enter your name first."); return; }
-          button.disabled = true;
-          await fetch("/v1/" + button.dataset.act + "/" + row.review_id, { method: "POST", headers: headers() });
-          load();
-        };
-      });
-    }
-    root.appendChild(card);
-  }
-}
-load();
-</script>
-</body>
-</html>
-"""
+PAGE = Path(__file__).with_name("review_page.html").read_text(encoding="utf-8")
 
 
 def _text(value) -> str | None:
     return value if isinstance(value, str) and value.strip() else None
 
 
-def _draft_fields(case_id: str) -> dict:
-    anchor = state_dir()
-    found = {
-        "narrative": None,
-        "classification": None,
-        "routing": None,
-        "draft_status": None,
-        "outcome": None,
-        "shadow_narrative": None,
-    }
+def _draft_body(raw) -> dict:
     try:
-        with open_db(anchor / "output.sqlite", kind="output") as db:
-            row = db.execute(
-                """SELECT draft_json, status, outcome FROM drafts
-                   WHERE case_id = ? ORDER BY created_at DESC LIMIT 1""",
-                (case_id,),
-            ).fetchone()
-        if row is not None:
-            body = json.loads(row["draft_json"])
-            found["narrative"] = _text(body.get("narrative"))
-            found["classification"] = _text(body.get("classification"))
-            found["routing"] = _text(body.get("routing"))
-            found["draft_status"] = row["status"]
-            found["outcome"] = row["outcome"]
-    except Exception:
-        pass
+        body = json.loads(raw) if isinstance(raw, str) else None
+    except ValueError:
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def _placeholders(values) -> str:
+    return ",".join("?" for _ in values)
+
+
+def _store_rows(kind: str, sql: str, params: list) -> list:
+    """Run one read against the output or trace store. A failure is logged, not raised."""
+    if not params:
+        return []
+    path = state_dir() / f"{kind}.sqlite"
+    if not using_postgres() and not path.exists():
+        return []
     try:
-        with open_db(anchor / "trace.sqlite", kind="trace") as db:
-            row = db.execute(
-                """SELECT shadow_narrative FROM trace_events
-                   WHERE case_id = ? AND shadow_narrative IS NOT NULL
-                   ORDER BY started_at DESC LIMIT 1""",
-                (case_id,),
-            ).fetchone()
-        if row is not None:
-            found["shadow_narrative"] = _text(row["shadow_narrative"])
-    except Exception:
-        pass
-    return found
+        with open_db(path, kind=kind) as db:
+            return db.execute(sql, params).fetchall()
+    except Exception as exc:
+        print(f"review queue: {kind} store unavailable: {exc}", file=sys.stderr, flush=True)
+        return []
+
+
+def _stored_drafts(hashes: list[str]) -> dict[str, dict]:
+    """Newest output-store draft for each draft hash."""
+    rows = _store_rows(
+        "output",
+        f"""SELECT draft_hash, case_id, input_revision, status, outcome FROM drafts
+            WHERE draft_hash IN ({_placeholders(hashes)})
+            ORDER BY created_at, rowid""",
+        hashes,
+    )
+    return {row["draft_hash"]: dict(row) for row in rows}
+
+
+def _gemma_paragraphs(case_ids: list[str]) -> tuple[dict[tuple[str, int], str], dict[str, str], dict[str, str]]:
+    """Gemma paragraphs from the trace.
+
+    A paragraph recorded with an input revision is kept for that revision.
+    A paragraph recorded without one is kept for the case. The newest
+    paragraph for the case is the fallback when the review's revision is unknown.
+    """
+    rows = _store_rows(
+        "trace",
+        f"""SELECT case_id, input_revision, shadow_narrative FROM trace_events
+            WHERE case_id IN ({_placeholders(case_ids)}) AND shadow_narrative IS NOT NULL
+            ORDER BY started_at, rowid""",
+        case_ids,
+    )
+    by_revision: dict[tuple[str, int], str] = {}
+    unscoped: dict[str, str] = {}
+    newest: dict[str, str] = {}
+    for row in rows:
+        text = _text(row["shadow_narrative"])
+        case_id = row["case_id"]
+        if text is None or not case_id:
+            continue
+        newest[case_id] = text
+        revision = row["input_revision"]
+        if revision is None:
+            unscoped[case_id] = text
+        else:
+            by_revision[(case_id, int(revision))] = text
+    return by_revision, unscoped, newest
+
+
+def _gemma_for(review_case: str, revision, paragraphs) -> str | None:
+    by_revision, unscoped, newest = paragraphs
+    if revision is not None:
+        matched = by_revision.get((review_case, int(revision)))
+        if matched is not None:
+            return matched
+    # A summary written without a revision still belongs to the case.
+    # A different revision's summary does not.
+    if review_case in unscoped:
+        return unscoped[review_case]
+    if revision is None:
+        return newest.get(review_case)
+    return None
 
 
 def queue_rows(db) -> list[dict]:
-    """Every review, newest first, with the draft and the Gemma paragraph."""
+    """Every review, newest first, with the draft it approves and Gemma's paragraph."""
     reviews = db.execute(
-        "SELECT id, case_id, status, reviewer FROM reviews ORDER BY id"
+        "SELECT id, case_id, draft, hash, status, reviewer FROM reviews ORDER BY rowid DESC"
     ).fetchall()
+    stored = _stored_drafts(sorted({r["hash"] for r in reviews if r["hash"]}))
+    gemma = _gemma_paragraphs(sorted({r["case_id"] for r in reviews if r["case_id"]}))
     rows = []
     for review in reviews:
-        item = {
-            "review_id": review["id"],
-            "case_id": review["case_id"],
-            "status": review["status"],
-            "reviewer": review["reviewer"],
-        }
-        item.update(_draft_fields(review["case_id"]))
-        rows.append(item)
+        body = _draft_body(review["draft"])
+        record = stored.get(review["hash"]) or {}
+        revision = record.get("input_revision")
+        rows.append(
+            {
+                "review_id": review["id"],
+                "case_id": review["case_id"],
+                "status": review["status"],
+                "reviewer": review["reviewer"],
+                "draft_hash": review["hash"],
+                "classification": _text(body.get("classification")),
+                "routing": _text(body.get("routing")),
+                "narrative": _text(body.get("narrative")),
+                "evidence_summary": _text(body.get("evidence_summary")),
+                "draft_status": record.get("status"),
+                "outcome": record.get("outcome"),
+                "shadow_narrative": _gemma_for(review["case_id"], revision, gemma),
+            }
+        )
     return rows

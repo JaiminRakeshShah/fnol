@@ -1,10 +1,13 @@
-"""HTTP human-review boundary for Azure.
+"""HTTP human-review boundary.
 
-Exposes pending / approve / reject / audit against the same mock state that
-``tools/runtime.py`` uses locally. On Azure, Container Apps Easy Auth must
-require the Entra app role Claims.Reviewer before these routes are reachable.
-This process never invents approval; it only applies an already-authenticated
-reviewer identity from the request.
+Exposes the review page plus queue / pending / approve / reject / audit against
+the same mock state that ``tools/runtime.py`` uses locally.
+
+The Claims.Reviewer check reads X-Ms-Client-Principal or X-Fnol-Roles. Nothing
+in front of this service sets those on AWS, and the review page sends
+X-Fnol-Roles itself, so the check is not an identity control. Access is
+controlled by the network: port 8090 accepts only the fnol-tasks security group
+and the dashboard tunnel. The reviewer name is whatever the caller types.
 """
 
 from __future__ import annotations
@@ -12,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import urlparse
@@ -163,7 +167,10 @@ def create_server(host: str = "0.0.0.0", port: int = 8090, state: Path | None = 
                     )
                     decided_case = row["case_id"]
                 from fnol_analyst.follow import notify_analyst
-                notify_analyst(decided_case)
+
+                threading.Thread(
+                    target=notify_analyst, args=(decided_case,), name=f"notify-{review_id}"
+                ).start()
                 self._json(200, {"status": status, "review_id": review_id, "reviewer": reviewer})
                 return
             self._json(404, {"error": "not_found"})
