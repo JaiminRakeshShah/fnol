@@ -450,6 +450,71 @@ Resources:
                   StringEquals:
                     kms:ViaService: !Sub s3.${AWS::Region}.amazonaws.com
 
+  ShadowGuardrail:
+    Type: AWS::Bedrock::Guardrail
+    Metadata:
+      com.aws.cloudformation.Context:
+        why: "Stops the Gemma summary from deciding coverage, payment, or fraud. The rules screen does not use it."
+        must:
+          - "denied topics and the two exercise markers only"
+          - "no sensitive-information filter, because a claim summary names people and places"
+        mutable: change-with-constraints
+    Properties:
+      Name: fnol-shadow-summary
+      Description: Light guardrail for the shadow narrative only. Trace is not requested on the model call.
+      BlockedInputMessaging: The summary request was blocked.
+      BlockedOutputsMessaging: "Summary withheld: model output was not a handler summary."
+      TopicPolicyConfig:
+        TopicsConfig:
+          - Name: coverage-decision
+            Definition: Deciding whether a loss is covered, not covered, or payable.
+            Examples:
+              - Coverage is approved for this collision.
+              - This loss is not covered.
+            Type: DENY
+            InputAction: BLOCK
+            OutputAction: BLOCK
+            InputEnabled: true
+            OutputEnabled: true
+          - Name: claim-denial
+            Definition: Approving, denying, or closing a claim.
+            Examples:
+              - The claim is denied.
+              - The claim is approved.
+            Type: DENY
+            InputAction: BLOCK
+            OutputAction: BLOCK
+            InputEnabled: true
+            OutputEnabled: true
+          - Name: claim-payment
+            Definition: Authorizing a payment, a settlement amount, or a financial reserve.
+            Examples:
+              - We will pay the repair.
+              - Set the reserve at 5000.
+            Type: DENY
+            InputAction: BLOCK
+            OutputAction: BLOCK
+            InputEnabled: true
+            OutputEnabled: true
+      WordPolicyConfig:
+        WordsConfig:
+          - Text: private_token
+            InputAction: BLOCK
+            OutputAction: BLOCK
+            InputEnabled: true
+            OutputEnabled: true
+          - Text: SYNTHETIC-PRIVATE-
+            InputAction: BLOCK
+            OutputAction: BLOCK
+            InputEnabled: true
+            OutputEnabled: true
+
+  ShadowGuardrailVersion:
+    Type: AWS::Bedrock::GuardrailVersion
+    Properties:
+      GuardrailIdentifier: !GetAtt ShadowGuardrail.GuardrailId
+      Description: Published summary guardrail.
+
   AnalystRole:
     Type: AWS::IAM::Role
     Metadata:
@@ -458,6 +523,7 @@ Resources:
         must:
           - "no s3"
           - "bedrock limited to google.gemma-4-31b"
+          - "ApplyGuardrail only on the shadow summary guardrail"
         mutable: change-with-constraints
     Properties:
       RoleName: fnol-analyst
@@ -496,7 +562,7 @@ Resources:
               - Sid: ApplyShadowGuardrail
                 Effect: Allow
                 Action: bedrock:ApplyGuardrail
-                Resource: !Sub arn:aws:bedrock:${AWS::Region}:${AWS::AccountId}:guardrail/*
+                Resource: !GetAtt ShadowGuardrail.GuardrailArn
 
   PolicyRole:
     Type: AWS::IAM::Role
@@ -651,6 +717,14 @@ Outputs:
     Value: !GetAtt CitationsRole.Arn
   AnalystRoleArn:
     Value: !GetAtt AnalystRole.Arn
+  ShadowGuardrailId:
+    Value: !GetAtt ShadowGuardrail.GuardrailId
+    Export:
+      Name: fnol-shadow-guardrail-id
+  ShadowGuardrailVersion:
+    Value: !GetAtt ShadowGuardrailVersion.Version
+    Export:
+      Name: fnol-shadow-guardrail-version
   PolicyRoleArn:
     Value: !GetAtt PolicyRole.Arn
   RulesRoleArn:

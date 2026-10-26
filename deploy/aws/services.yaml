@@ -640,6 +640,10 @@ Resources:
             Value: bedrock
           - Name: FNOL_BEDROCK_AUTH
             Value: iam
+          - Name: BEDROCK_GUARDRAIL_ID
+            Value: !ImportValue fnol-shadow-guardrail-id
+          - Name: BEDROCK_GUARDRAIL_VERSION
+            Value: !ImportValue fnol-shadow-guardrail-version
           - Name: FNOL_STEP_TRANSPORT
             Value: http
           - Name: FNOL_INTAKE_URL
