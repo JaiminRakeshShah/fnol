@@ -88,7 +88,6 @@ def render(script: str, suffix: str) -> str:
         "output": "output" + suffix,
         "trace": "trace" + suffix,
         "mock": "mock" + suffix,
-        "desk": "desk" + suffix,
     }
     rendered = script
     for kind, name in names.items():

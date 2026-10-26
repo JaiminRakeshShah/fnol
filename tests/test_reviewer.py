@@ -50,6 +50,13 @@ class ReviewerHttpTests(unittest.TestCase):
             body = json.loads(exc.read().decode("utf-8"))
             return exc.code, body
 
+    def test_page_loads(self):
+        req = urllib.request.Request(self.base + "/")
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            body = resp.read().decode("utf-8")
+        self.assertEqual(resp.status, 200)
+        self.assertIn("Pending cases", body)
+
     def test_forbidden_without_role(self):
         status, body = self._request("GET", "/v1/pending", roles="")
         self.assertEqual(status, 403)

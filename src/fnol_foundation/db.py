@@ -5,7 +5,7 @@ Local dev and the default test run keep using SQLite files. Set
 ``FNOL_RDS_IAM_AUTH=1`` to use PostgreSQL (RDS in AWS, Postgres in compose).
 
 ``FNOL_PG_NAMESPACE=shared`` (the default) uses the schemas ``input``,
-``output``, ``trace``, ``mock``, and ``desk``. ``isolate`` gives each state
+``output``, ``trace``, and ``mock``. ``isolate`` gives each state
 directory or mock file its own schemas so tests can share one server.
 """
 
@@ -26,7 +26,7 @@ _READY_LOCK = threading.Lock()
 _SECRET_CACHE: dict[str, tuple[float, str]] = {}
 _IAM_CACHE: dict[str, tuple[float, str]] = {}
 
-_KINDS = ("input", "output", "trace", "mock", "desk")
+_KINDS = ("input", "output", "trace", "mock")
 _SCHEMA_TOKEN = re.compile(r"^[a-z][a-z0-9_]{0,40}$")
 
 
@@ -287,14 +287,17 @@ def open_db(path: Path, *, kind: str) -> Connection:
 def ensure_ready(anchor: Path | None = None) -> str:
     """Confirm versioned DDL for this namespace once per process. Returns the suffix.
 
-    Does not create tables. ``tools/migrate.py`` applies the SQL files.
+    Isolate mode, used by the Postgres CI job, applies the files for that
+    namespace. A shared deployment only checks that migrate already ran.
     """
     suffix = namespace_suffix(anchor)
     with _READY_LOCK:
         if suffix in _READY:
             return suffix
-        from fnol_foundation.migrate import verify_migrations
+        from fnol_foundation.migrate import apply_migrations, verify_migrations
 
+        if os.environ.get("FNOL_PG_NAMESPACE", "").strip() == "isolate":
+            apply_migrations(suffix)
         verify_migrations(suffix)
         _READY.add(suffix)
     return suffix
@@ -305,7 +308,6 @@ _TABLES = {
     "output": ("drafts",),
     "trace": ("trace_events",),
     "mock": ("reviews", "records", "keys", "calls", "audit"),
-    "desk": ("sessions", "users"),
 }
 
 

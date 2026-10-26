@@ -7,7 +7,4 @@ reports/*
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
-!results/aws/*.sqlite
-!.verify-state/*.sqlite
-!.verify-state_failed_calls/*.sqlite
 deploy/azure/team.shared.env

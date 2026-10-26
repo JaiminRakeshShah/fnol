@@ -25,9 +25,8 @@ BEGIN
 END
 $$;
 
-GRANT USAGE ON SCHEMA input, output, trace, mock, desk TO fnol_dashboard;
-GRANT SELECT ON ALL TABLES IN SCHEMA input TO fnol_dashboard;
-GRANT SELECT ON ALL TABLES IN SCHEMA output TO fnol_dashboard;
-GRANT SELECT ON ALL TABLES IN SCHEMA trace TO fnol_dashboard;
-GRANT SELECT ON ALL TABLES IN SCHEMA mock TO fnol_dashboard;
-GRANT SELECT ON ALL TABLES IN SCHEMA desk TO fnol_dashboard;
+GRANT USAGE ON SCHEMA {{input}}, {{output}}, {{trace}}, {{mock}} TO fnol_dashboard;
+GRANT SELECT ON ALL TABLES IN SCHEMA {{input}} TO fnol_dashboard;
+GRANT SELECT ON ALL TABLES IN SCHEMA {{output}} TO fnol_dashboard;
+GRANT SELECT ON ALL TABLES IN SCHEMA {{trace}} TO fnol_dashboard;
+GRANT SELECT ON ALL TABLES IN SCHEMA {{mock}} TO fnol_dashboard;

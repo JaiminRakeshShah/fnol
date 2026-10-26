@@ -495,14 +495,6 @@ Resources:
               - Region: !Ref AWS::Region
                 Account: !Ref AWS::AccountId
                 DbResource: !GetAtt Database.DbiResourceId
-          - Sid: ConnectAsDesk
-            Effect: Allow
-            Action: rds-db:connect
-            Resource: !Sub
-              - arn:aws:rds-db:${Region}:${Account}:dbuser:${DbResource}/fnol_desk
-              - Region: !Ref AWS::Region
-                Account: !Ref AWS::AccountId
-                DbResource: !GetAtt Database.DbiResourceId
 
 Outputs:
   VpcId:
