@@ -5,7 +5,7 @@
   },
   {
     "ParameterKey": "ImageTag",
-    "ParameterValue": "1.3.1"
+    "ParameterValue": "1.3.2"
   },
   {
     "ParameterKey": "StateBackend",
