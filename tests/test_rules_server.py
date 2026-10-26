@@ -15,7 +15,9 @@ from fnol_foundation.stores import Stores
 from fnol_rules.claims import ClaimsAttempt, ClaimsFetchResult
 from fnol_rules.pipeline import start_routing
 from fnol_rules.types import ClaimsSnapshot
+import server.rules_server as rules_server
 from server.rules_server import handle, serve
+from server_entry import McpServerContract
 
 
 def _claims_ok(case_id, base_url, **_kw):
@@ -124,6 +126,15 @@ class RulesServerTests(unittest.TestCase):
         body = json.loads(lines[1]["result"]["content"][0]["text"])
         self.assertEqual(body["routes"][0]["route"], "standard")
         self.assertFalse(lines[1]["result"]["isError"])
+
+
+class RulesServerContractTests(McpServerContract, unittest.TestCase):
+    module = rules_server
+    script = ROOT / "server" / "rules_server.py"
+    tool_name = "start_routing"
+    function_name = "start_routing"
+    server_name = "fnol-rules"
+    http_name = "rules"
 
 
 if __name__ == "__main__":

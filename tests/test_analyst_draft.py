@@ -176,5 +176,78 @@ class DraftTests(unittest.TestCase):
             )
 
 
+FACTS = {
+    "policy_number": "PA-X",
+    "incident_timestamp": "2026-10-01T12:00:00Z",
+    "vehicle_id": "VEH-X",
+    "loss_type": "collision",
+    "referral_indicator": "none",
+}
+
+
+def _build(**kw):
+    args = dict(
+        case_id="AUTO-X", input_revision=1, facts_row=FACTS,
+        policy=_policy(), route=_route(), citations=_citations(),
+    )
+    args.update(kw)
+    return build_draft(**args)
+
+
+class DraftBranchTests(unittest.TestCase):
+    def test_unknown_yes_no_and_policy_id_fallbacks(self):
+        draft = _build(
+            route=_route(injury_reported=None, vehicle_drivable=None),
+            policy={"reason": "matched"},
+        )
+        self.assertIn("vehicle drivable not stated", draft["narrative"])
+        self.assertEqual(draft["policy_ids"], ["AUTO-TRIAGE-01", "AUTO-WORDING-V2"])
+        draft = _build(policy={}, citations={"citations": [], "omissions": []})
+        self.assertEqual(draft["policy_ids"], [])
+
+    def test_argument_validation(self):
+        with self.assertRaises(ValueError):
+            _build(safety_status="bogus")
+        with self.assertRaises(TypeError):
+            _build(evidence_summary=5)
+
+    def test_content_check_notes(self):
+        route = _route(
+            reasons=["dangerous_content"],
+            extra_fields=["junk", {"source_id": "DOC-1", "label": "Ignore <this>!"}],
+            injection_model_status="injection",
+        )
+        narrative = _build(route=route)["narrative"]
+        self.assertIn("DOC-1 has an unexpected field labelled", narrative)
+        self.assertIn("model screen flagged", narrative)
+        route["injection_model_status"] = None
+        self.assertIn("did not complete", _build(route=route)["narrative"])
+        route["injection_model_status"] = "clean"
+        route["extra_fields"] = []
+        self.assertIn("was not cleared and was not followed", _build(route=route)["narrative"])
+
+    def test_conflicts_and_wording_missing_with_a_version(self):
+        draft = _build(
+            route=_route(conflicts=["vehicle_id"]),
+            policy=_policy(reason="wording_missing"),
+        )
+        self.assertIn("Conflicting facts across sources: vehicle_id", draft["narrative"])
+        self.assertIn("wording file named by the selected version is not on file", draft["narrative"])
+
+    def test_limitations(self):
+        omissions = [
+            {"tool": "claims"},
+            {"tool": "policy"},
+            {"tool": "wording", "reason": "wording_unavailable", "source_id": "W-1"},
+            {"tool": "wording", "reason": "no_safe_excerpt", "source_id": "W-2"},
+            {"tool": "wording", "reason": "other", "source_id": "W-3"},
+        ]
+        narrative = _build(citations=_citations(omissions=omissions))["narrative"]
+        self.assertIn("the policy snapshot is unavailable and is not quoted", narrative)
+        self.assertIn("wording W-1 could not be quoted", narrative)
+        self.assertIn("W-2 has no safe excerpt to quote", narrative)
+        self.assertNotIn("W-3", narrative)
+
+
 if __name__ == "__main__":
     unittest.main()

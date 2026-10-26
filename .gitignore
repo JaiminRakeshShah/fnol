@@ -1,6 +1,10 @@
 .venv/
 .state/
 __pycache__/
+.coverage
+coverage.json
+htmlcov/
+.pytest_cache/
 submissions/
 reports/*
 !reports/score-report.json

@@ -32,7 +32,9 @@ from fnol_intake.parse import file_sha256  # noqa: E402
 from fnol_intake.pipeline import start_ingestion  # noqa: E402
 from fnol_policy.pipeline import start_policy  # noqa: E402
 from fnol_rules.pipeline import start_routing  # noqa: E402
+import server.citation_server as citation_server  # noqa: E402
 from server.citation_server import handle, serve  # noqa: E402
+from server_entry import McpServerContract  # noqa: E402
 
 DEV_DOCUMENTS = ROOT / "data" / "dev" / "documents"
 DEV_POLICIES = ROOT / "data" / "dev" / "policies"
@@ -643,6 +645,21 @@ class DevGoldTests(unittest.TestCase):
         self.assertNotIn("SYNTHETIC-PRIVATE-", blob)
         self.assertIn("AUTO-D11-ESTIMATE", {c["source_id"] for c in row["citations"]})
         self.assertEqual(row["policy_ids"], ["AUTO-TRIAGE-01", "AUTO-WORDING-V2"])
+
+
+class CitationServerContractTests(McpServerContract, unittest.TestCase):
+    module = citation_server
+    script = ROOT / "server" / "citation_server.py"
+    tool_name = "start_citations"
+    function_name = "start_citations"
+    server_name = "fnol-citations"
+    http_name = "citations"
+
+    def test_lists_start_citations_tool(self):
+        listed = handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+        tools = listed["result"]["tools"]
+        self.assertEqual([t["name"] for t in tools], ["start_citations"])
+        self.assertIn("case_id", tools[0]["inputSchema"]["properties"])
 
 
 if __name__ == "__main__":

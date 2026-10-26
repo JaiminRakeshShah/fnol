@@ -55,7 +55,7 @@ def request_json(
         if not _retryable(status) or attempt == max_attempts:
             return last
         pause(attempt)
-    return last
+    return last  # pragma: no cover — loop always returns on the final attempt
 
 
 def _retryable(status: int) -> bool:

@@ -6,13 +6,16 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "src"))
 
+import server.input_server as input_server
 from server.input_server import handle, serve
 from fnol_intake.pipeline import start_ingestion
+from server_entry import McpServerContract, run_as_main
 
 DEV_DOCUMENTS = ROOT / "data" / "dev" / "documents"
 DEV_POLICIES = ROOT / "data" / "dev" / "policies"
@@ -83,6 +86,29 @@ class InputServerTests(unittest.TestCase):
         body = json.loads(lines[1]["result"]["content"][0]["text"])
         self.assertEqual(body["input_sqlite"], "/state/input.sqlite")
         self.assertFalse(lines[1]["result"]["isError"])
+
+
+class InputServerContractTests(McpServerContract, unittest.TestCase):
+    module = input_server
+    script = ROOT / "server" / "input_server.py"
+    tool_name = "start_ingestion"
+    function_name = "start_ingestion"
+    server_name = "fnol-input"
+    http_name = "intake"
+    takes_args = False
+
+
+class PackageMainTests(unittest.TestCase):
+    def test_python_dash_m_server_serves_input_tools_over_stdio(self):
+        request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/list"}) + "\n"
+        output = run_as_main(ROOT / "server" / "__main__.py", stdin_text=request)
+        tools = json.loads(output)["result"]["tools"]
+        self.assertEqual([tool["name"] for tool in tools], ["start_ingestion"])
+
+    def test_main_serves_until_stdin_closes(self):
+        with mock.patch("server.input_server.serve") as serve_mock:
+            run_as_main(ROOT / "server" / "__main__.py")
+        serve_mock.assert_called_once_with()
 
 
 if __name__ == "__main__":
