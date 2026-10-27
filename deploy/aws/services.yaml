@@ -658,6 +658,8 @@ Resources:
             Value: !Sub http://enterprise.${DnsNamespace}:8767
           - Name: FNOL_HTTP_PORT
             Value: "8080"
+          - Name: FNOL_QUEUE_POLL_SECONDS
+            Value: "30"
           - Name: FNOL_STATE_DIR
             Value: !If [MountStateVolume, "/mnt/state", "/tmp/fnol-state"]
           - !If

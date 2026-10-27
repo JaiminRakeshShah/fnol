@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from fnol_analyst.draft import FACT_COLUMNS, build_draft
 from fnol_analyst.http import default_transport
+from fnol_analyst.queue import queue_action
 from fnol_analyst.servers import ServerSet
 from fnol_analyst.submit import (
     SubmitError,
@@ -178,6 +179,55 @@ class AnalystClient:
 
     def build_all(self, case_ids: list[str] | None = None) -> list[DraftRecord]:
         return [self.build(case_id) for case_id in (case_ids or self.case_ids())]
+
+    def enqueue_case(self, case_id: str) -> dict[str, Any]:
+        """Run policy, rules, citations, the draft, Gemma, and POST /v1/reviews.
+
+        Intake has already stored the case. A revision whose documents were
+        already sent for review is left alone. This does not approve or file.
+        """
+        revision = self.stores.input.get_revision(case_id)
+        draft = self.stores.output.latest_draft(case_id) if revision is not None else None
+        prior = None
+        if (
+            revision is not None
+            and draft is not None
+            and draft.input_revision not in (None, revision.revision)
+        ):
+            prior = self.stores.input.get_revision(case_id, draft.input_revision)
+        action = queue_action(revision, draft, prior)
+        if action == "skip":
+            return {
+                "case_id": case_id,
+                "action": "skipped",
+                "revision": None if revision is None else revision.revision,
+            }
+        if action == "process":
+            self.servers.prepare_case(case_id)
+            self.build(case_id)
+        record = self.submit(case_id)
+        return {
+            "case_id": case_id,
+            "action": "submitted" if action == "submit" else "queued",
+            "revision": None if revision is None else revision.revision,
+            "draft_id": record.draft_id,
+            "review_id": record.review_id,
+            "status": record.status,
+        }
+
+    def enqueue_pending(self) -> list[dict[str, Any]]:
+        """Queue every ingested case that does not already have a review.
+
+        One failure is recorded and the remaining cases still run.
+        """
+        results = []
+        for case_id in self.case_ids():
+            try:
+                results.append(self.enqueue_case(case_id))
+            except Exception as exc:
+                code = getattr(exc, "error_code", None) or exc.__class__.__name__
+                results.append({"case_id": case_id, "action": "error", "error": code})
+        return results
 
     def export(self, path: str | Path, case_ids: list[str] | None = None) -> Path:
         """Write the contract JSON array from drafts already on disk.

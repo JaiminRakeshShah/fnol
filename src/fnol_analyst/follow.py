@@ -1,13 +1,20 @@
-"""Webhook the reviewer calls after a human decision.
+"""Analyst process that stays running.
 
-The analyst listens. It does not poll and it does not approve. One POST
-copies that decision onto the draft and, for an approval, files the claim.
+A background pass looks for input revisions that have no review yet. For each
+one it runs policy, rules, citations, the draft, the Gemma summary, and
+POST /v1/reviews. It does not call intake again and it does not approve.
+
+The HTTP server is the webhook the reviewer calls after a human decision.
+One POST copies that decision onto the draft and, for an approval, files
+the claim.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -58,6 +65,46 @@ def notify_analyst(case_id: str) -> None:
         print(f"analyst webhook failed: {exc}", flush=True)
 
 
+def queue_interval() -> float:
+    """Seconds between queue passes. Zero or below turns the loop off."""
+    raw = os.environ.get("FNOL_QUEUE_POLL_SECONDS", "30").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 30.0
+
+
+def run_queue_pass() -> list[dict[str, Any]]:
+    """Queue every ingested case that is not already on the reviewer page."""
+    with AnalystClient() as client:
+        rows = client.enqueue_pending()
+    for row in rows:
+        if row.get("action") != "skipped":
+            print(f"queue {row}", flush=True)
+    return rows
+
+
+def queue_loop(interval: float) -> None:
+    """Keep queueing new revisions until the process stops."""
+    while True:
+        try:
+            run_queue_pass()
+        except Exception as exc:
+            print(f"queue pass failed: {exc}", flush=True)
+        time.sleep(interval)
+
+
+def start_queue_loop() -> None:
+    interval = queue_interval()
+    if interval <= 0:
+        print("queue loop off", flush=True)
+        return
+    threading.Thread(
+        target=queue_loop, args=(interval,), name="fnol-queue", daemon=True
+    ).start()
+    print(f"queue loop every {interval:g}s", flush=True)
+
+
 def serve(host: str | None = None, port: int | None = None) -> None:
     """Listen for the reviewer webhook until the process is stopped."""
     host = host or os.environ.get("FNOL_HTTP_HOST", "0.0.0.0")
@@ -105,6 +152,7 @@ def serve(host: str | None = None, port: int | None = None) -> None:
             self._json(status, result)
 
     server = ThreadingHTTPServer((host, port), Handler)
+    start_queue_loop()
     print(f"analyst webhook on http://{host}:{port}", flush=True)
     try:
         server.serve_forever()

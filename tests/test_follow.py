@@ -173,6 +173,9 @@ class _FakeClientCM:
 
 class ServeTests(TestCase):
     def setUp(self):
+        env = mock.patch.dict("os.environ", {"FNOL_QUEUE_POLL_SECONDS": "0"})
+        env.start()
+        self.addCleanup(env.stop)
         self.servers = []
         real = follow.ThreadingHTTPServer
         servers = self.servers
@@ -247,7 +250,8 @@ class ServeLifecycleTests(TestCase):
         server = mock.MagicMock()
         server.serve_forever.side_effect = KeyboardInterrupt
         with mock.patch.object(follow, "ThreadingHTTPServer", return_value=server), mock.patch.dict(
-            "os.environ", {"FNOL_HTTP_HOST": "127.0.0.1", "FNOL_HTTP_PORT": "0"}
+            "os.environ",
+            {"FNOL_HTTP_HOST": "127.0.0.1", "FNOL_HTTP_PORT": "0", "FNOL_QUEUE_POLL_SECONDS": "0"},
         ), redirect_stdout(io.StringIO()):
             follow.serve()
         server.server_close.assert_called_once()
@@ -257,8 +261,8 @@ class ServeLifecycleTests(TestCase):
 
         server = mock.MagicMock()
         server.serve_forever.side_effect = KeyboardInterrupt
-        with mock.patch("http.server.ThreadingHTTPServer", return_value=server), redirect_stdout(
-            io.StringIO()
-        ):
+        with mock.patch("http.server.ThreadingHTTPServer", return_value=server), mock.patch.dict(
+            "os.environ", {"FNOL_QUEUE_POLL_SECONDS": "0"}
+        ), redirect_stdout(io.StringIO()):
             runpy.run_module("fnol_analyst.follow", run_name="__main__")
         server.server_close.assert_called_once()
