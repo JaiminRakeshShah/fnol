@@ -99,7 +99,7 @@
     {
       "type": "stat",
       "title": "Received",
-      "description": "Claims that entered intake in the selected period.",
+      "description": "Claims that entered intake in the selected period. Processing, Pending, Duplicate, Approved not processed, Submitted, Rejected, and Needs attention add up to this number.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -120,6 +120,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -127,6 +128,9 @@
           ],
           "fields": "",
           "values": false
+        },
+        "text": {
+          "valueSize": 44
         }
       },
       "targets": [
@@ -143,7 +147,7 @@
         }
       ],
       "gridPos": {
-        "h": 5,
+        "h": 6,
         "w": 4,
         "x": 0,
         "y": 1
@@ -152,8 +156,8 @@
     },
     {
       "type": "stat",
-      "title": "Sorted",
-      "description": "Claims the automation classified (collision, glass, theft) and routed to a handling path.",
+      "title": "Processing",
+      "description": "Still inside the automated pipeline. No draft is waiting on a person yet.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -162,7 +166,7 @@
         "defaults": {
           "color": {
             "mode": "fixed",
-            "fixedColor": "blue"
+            "fixedColor": "light-blue"
           },
           "decimals": 0
         },
@@ -174,6 +178,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -181,6 +186,9 @@
           ],
           "fields": "",
           "values": false
+        },
+        "text": {
+          "valueSize": 44
         }
       },
       "targets": [
@@ -193,11 +201,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH received AS (\n  SELECT case_id, received_at FROM (\n    SELECT case_id, min(ingested_at::timestamptz) AS received_at\n    FROM input.input_revisions\n    GROUP BY case_id\n  ) first_seen\n  WHERE $__timeFilter(received_at)\n),\nlatest AS (\n  SELECT DISTINCT ON (case_id) case_id, status, outcome, review_id, created_at\n  FROM output.drafts\n  ORDER BY case_id, seq DESC\n),\nroute AS (\n  SELECT DISTINCT ON (case_id) case_id, body_json::jsonb AS b\n  FROM input.decisions\n  WHERE kind = 'route'\n  ORDER BY case_id, input_revision DESC\n),\nclaims AS (\n  SELECT r.case_id, r.received_at, l.created_at::timestamptz AS drafted_at,\n    rv.status AS review_status, rv.reviewer, ro.b AS decision,\n    CASE\n      WHEN l.status = 'created' OR rec.case_id IS NOT NULL THEN 'Submitted'\n      WHEN l.outcome = 'duplicate' THEN 'Duplicate, not resubmitted'\n      WHEN rv.status = 'rejected' OR l.outcome = 'rejected' THEN 'Rejected'\n      WHEN l.outcome IN ('approval_mismatch', 'idempotency_conflict', 'hash_mismatch') THEN 'Needs attention'\n      WHEN rv.status = 'approved' THEN 'Accepted, awaiting submission'\n      WHEN rv.status = 'pending' THEN 'Awaiting reviewer'\n      ELSE 'In automated processing'\n    END AS stage\n  FROM received r\n  LEFT JOIN latest l ON l.case_id = r.case_id\n  LEFT JOIN mock.reviews rv ON rv.id = l.review_id\n  LEFT JOIN mock.records rec ON rec.case_id = r.case_id\n  LEFT JOIN route ro ON ro.case_id = r.case_id\n)\nSELECT count(*) FILTER (WHERE decision IS NOT NULL) AS claims FROM claims"
+          "rawSql": "WITH received AS (\n  SELECT case_id, received_at FROM (\n    SELECT case_id, min(ingested_at::timestamptz) AS received_at\n    FROM input.input_revisions\n    GROUP BY case_id\n  ) first_seen\n  WHERE $__timeFilter(received_at)\n),\nlatest AS (\n  SELECT DISTINCT ON (case_id) case_id, status, outcome, review_id, created_at\n  FROM output.drafts\n  ORDER BY case_id, seq DESC\n),\nroute AS (\n  SELECT DISTINCT ON (case_id) case_id, body_json::jsonb AS b\n  FROM input.decisions\n  WHERE kind = 'route'\n  ORDER BY case_id, input_revision DESC\n),\nclaims AS (\n  SELECT r.case_id, r.received_at, l.created_at::timestamptz AS drafted_at,\n    rv.status AS review_status, rv.reviewer, ro.b AS decision,\n    CASE\n      WHEN l.status = 'created' OR rec.case_id IS NOT NULL THEN 'Submitted'\n      WHEN l.outcome = 'duplicate' THEN 'Duplicate, not resubmitted'\n      WHEN rv.status = 'rejected' OR l.outcome = 'rejected' THEN 'Rejected'\n      WHEN l.outcome IN ('approval_mismatch', 'idempotency_conflict', 'hash_mismatch') THEN 'Needs attention'\n      WHEN rv.status = 'approved' THEN 'Accepted, awaiting submission'\n      WHEN rv.status = 'pending' THEN 'Awaiting reviewer'\n      ELSE 'In automated processing'\n    END AS stage\n  FROM received r\n  LEFT JOIN latest l ON l.case_id = r.case_id\n  LEFT JOIN mock.reviews rv ON rv.id = l.review_id\n  LEFT JOIN mock.records rec ON rec.case_id = r.case_id\n  LEFT JOIN route ro ON ro.case_id = r.case_id\n)\nSELECT count(*) FILTER (WHERE stage = 'In automated processing') AS claims FROM claims"
         }
       ],
       "gridPos": {
-        "h": 5,
+        "h": 6,
         "w": 4,
         "x": 4,
         "y": 1
@@ -206,8 +214,8 @@
     },
     {
       "type": "stat",
-      "title": "Accepted",
-      "description": "Claims a human reviewer approved. Includes accepted claims not yet submitted and duplicates that were blocked from resubmission.",
+      "title": "Pending",
+      "description": "A draft is with a reviewer and no decision has been made.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -216,7 +224,7 @@
         "defaults": {
           "color": {
             "mode": "fixed",
-            "fixedColor": "semi-dark-green"
+            "fixedColor": "orange"
           },
           "decimals": 0
         },
@@ -228,6 +236,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -235,6 +244,9 @@
           ],
           "fields": "",
           "values": false
+        },
+        "text": {
+          "valueSize": 44
         }
       },
       "targets": [
@@ -247,11 +259,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH received AS (\n  SELECT case_id, received_at FROM (\n    SELECT case_id, min(ingested_at::timestamptz) AS received_at\n    FROM input.input_revisions\n    GROUP BY case_id\n  ) first_seen\n  WHERE $__timeFilter(received_at)\n),\nlatest AS (\n  SELECT DISTINCT ON (case_id) case_id, status, outcome, review_id, created_at\n  FROM output.drafts\n  ORDER BY case_id, seq DESC\n),\nroute AS (\n  SELECT DISTINCT ON (case_id) case_id, body_json::jsonb AS b\n  FROM input.decisions\n  WHERE kind = 'route'\n  ORDER BY case_id, input_revision DESC\n),\nclaims AS (\n  SELECT r.case_id, r.received_at, l.created_at::timestamptz AS drafted_at,\n    rv.status AS review_status, rv.reviewer, ro.b AS decision,\n    CASE\n      WHEN l.status = 'created' OR rec.case_id IS NOT NULL THEN 'Submitted'\n      WHEN l.outcome = 'duplicate' THEN 'Duplicate, not resubmitted'\n      WHEN rv.status = 'rejected' OR l.outcome = 'rejected' THEN 'Rejected'\n      WHEN l.outcome IN ('approval_mismatch', 'idempotency_conflict', 'hash_mismatch') THEN 'Needs attention'\n      WHEN rv.status = 'approved' THEN 'Accepted, awaiting submission'\n      WHEN rv.status = 'pending' THEN 'Awaiting reviewer'\n      ELSE 'In automated processing'\n    END AS stage\n  FROM received r\n  LEFT JOIN latest l ON l.case_id = r.case_id\n  LEFT JOIN mock.reviews rv ON rv.id = l.review_id\n  LEFT JOIN mock.records rec ON rec.case_id = r.case_id\n  LEFT JOIN route ro ON ro.case_id = r.case_id\n)\nSELECT count(*) FILTER (WHERE review_status = 'approved') AS claims FROM claims"
+          "rawSql": "WITH received AS (\n  SELECT case_id, received_at FROM (\n    SELECT case_id, min(ingested_at::timestamptz) AS received_at\n    FROM input.input_revisions\n    GROUP BY case_id\n  ) first_seen\n  WHERE $__timeFilter(received_at)\n),\nlatest AS (\n  SELECT DISTINCT ON (case_id) case_id, status, outcome, review_id, created_at\n  FROM output.drafts\n  ORDER BY case_id, seq DESC\n),\nroute AS (\n  SELECT DISTINCT ON (case_id) case_id, body_json::jsonb AS b\n  FROM input.decisions\n  WHERE kind = 'route'\n  ORDER BY case_id, input_revision DESC\n),\nclaims AS (\n  SELECT r.case_id, r.received_at, l.created_at::timestamptz AS drafted_at,\n    rv.status AS review_status, rv.reviewer, ro.b AS decision,\n    CASE\n      WHEN l.status = 'created' OR rec.case_id IS NOT NULL THEN 'Submitted'\n      WHEN l.outcome = 'duplicate' THEN 'Duplicate, not resubmitted'\n      WHEN rv.status = 'rejected' OR l.outcome = 'rejected' THEN 'Rejected'\n      WHEN l.outcome IN ('approval_mismatch', 'idempotency_conflict', 'hash_mismatch') THEN 'Needs attention'\n      WHEN rv.status = 'approved' THEN 'Accepted, awaiting submission'\n      WHEN rv.status = 'pending' THEN 'Awaiting reviewer'\n      ELSE 'In automated processing'\n    END AS stage\n  FROM received r\n  LEFT JOIN latest l ON l.case_id = r.case_id\n  LEFT JOIN mock.reviews rv ON rv.id = l.review_id\n  LEFT JOIN mock.records rec ON rec.case_id = r.case_id\n  LEFT JOIN route ro ON ro.case_id = r.case_id\n)\nSELECT count(*) FILTER (WHERE stage = 'Awaiting reviewer') AS claims FROM claims"
         }
       ],
       "gridPos": {
-        "h": 5,
+        "h": 6,
         "w": 4,
         "x": 8,
         "y": 1
@@ -260,8 +272,124 @@
     },
     {
       "type": "stat",
+      "title": "Duplicate",
+      "description": "A reviewer approved the draft, and the claims system refused a second record because this loss was already on file.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "fnol-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "purple"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "orientation": "auto",
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {
+          "valueSize": 44
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "fnol-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH received AS (\n  SELECT case_id, received_at FROM (\n    SELECT case_id, min(ingested_at::timestamptz) AS received_at\n    FROM input.input_revisions\n    GROUP BY case_id\n  ) first_seen\n  WHERE $__timeFilter(received_at)\n),\nlatest AS (\n  SELECT DISTINCT ON (case_id) case_id, status, outcome, review_id, created_at\n  FROM output.drafts\n  ORDER BY case_id, seq DESC\n),\nroute AS (\n  SELECT DISTINCT ON (case_id) case_id, body_json::jsonb AS b\n  FROM input.decisions\n  WHERE kind = 'route'\n  ORDER BY case_id, input_revision DESC\n),\nclaims AS (\n  SELECT r.case_id, r.received_at, l.created_at::timestamptz AS drafted_at,\n    rv.status AS review_status, rv.reviewer, ro.b AS decision,\n    CASE\n      WHEN l.status = 'created' OR rec.case_id IS NOT NULL THEN 'Submitted'\n      WHEN l.outcome = 'duplicate' THEN 'Duplicate, not resubmitted'\n      WHEN rv.status = 'rejected' OR l.outcome = 'rejected' THEN 'Rejected'\n      WHEN l.outcome IN ('approval_mismatch', 'idempotency_conflict', 'hash_mismatch') THEN 'Needs attention'\n      WHEN rv.status = 'approved' THEN 'Accepted, awaiting submission'\n      WHEN rv.status = 'pending' THEN 'Awaiting reviewer'\n      ELSE 'In automated processing'\n    END AS stage\n  FROM received r\n  LEFT JOIN latest l ON l.case_id = r.case_id\n  LEFT JOIN mock.reviews rv ON rv.id = l.review_id\n  LEFT JOIN mock.records rec ON rec.case_id = r.case_id\n  LEFT JOIN route ro ON ro.case_id = r.case_id\n)\nSELECT count(*) FILTER (WHERE stage = 'Duplicate, not resubmitted') AS claims FROM claims"
+        }
+      ],
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 12,
+        "y": 1
+      },
+      "id": 5
+    },
+    {
+      "type": "stat",
+      "title": "Approved, not processed",
+      "description": "A reviewer approved the draft, and submission did not finish, so nothing was written to the claims system.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "fnol-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "yellow"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "orientation": "auto",
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {
+          "valueSize": 44
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "fnol-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH received AS (\n  SELECT case_id, received_at FROM (\n    SELECT case_id, min(ingested_at::timestamptz) AS received_at\n    FROM input.input_revisions\n    GROUP BY case_id\n  ) first_seen\n  WHERE $__timeFilter(received_at)\n),\nlatest AS (\n  SELECT DISTINCT ON (case_id) case_id, status, outcome, review_id, created_at\n  FROM output.drafts\n  ORDER BY case_id, seq DESC\n),\nroute AS (\n  SELECT DISTINCT ON (case_id) case_id, body_json::jsonb AS b\n  FROM input.decisions\n  WHERE kind = 'route'\n  ORDER BY case_id, input_revision DESC\n),\nclaims AS (\n  SELECT r.case_id, r.received_at, l.created_at::timestamptz AS drafted_at,\n    rv.status AS review_status, rv.reviewer, ro.b AS decision,\n    CASE\n      WHEN l.status = 'created' OR rec.case_id IS NOT NULL THEN 'Submitted'\n      WHEN l.outcome = 'duplicate' THEN 'Duplicate, not resubmitted'\n      WHEN rv.status = 'rejected' OR l.outcome = 'rejected' THEN 'Rejected'\n      WHEN l.outcome IN ('approval_mismatch', 'idempotency_conflict', 'hash_mismatch') THEN 'Needs attention'\n      WHEN rv.status = 'approved' THEN 'Accepted, awaiting submission'\n      WHEN rv.status = 'pending' THEN 'Awaiting reviewer'\n      ELSE 'In automated processing'\n    END AS stage\n  FROM received r\n  LEFT JOIN latest l ON l.case_id = r.case_id\n  LEFT JOIN mock.reviews rv ON rv.id = l.review_id\n  LEFT JOIN mock.records rec ON rec.case_id = r.case_id\n  LEFT JOIN route ro ON ro.case_id = r.case_id\n)\nSELECT count(*) FILTER (WHERE stage = 'Accepted, awaiting submission') AS claims FROM claims"
+        }
+      ],
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 16,
+        "y": 1
+      },
+      "id": 6
+    },
+    {
+      "type": "stat",
       "title": "Submitted",
-      "description": "Accepted claims recorded in the claims system. Work complete.",
+      "description": "Approved drafts recorded in the claims system.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -282,6 +410,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -289,6 +418,9 @@
           ],
           "fields": "",
           "values": false
+        },
+        "text": {
+          "valueSize": 44
         }
       },
       "targets": [
@@ -305,17 +437,17 @@
         }
       ],
       "gridPos": {
-        "h": 5,
+        "h": 6,
         "w": 4,
-        "x": 12,
+        "x": 20,
         "y": 1
       },
-      "id": 5
+      "id": 7
     },
     {
       "type": "stat",
       "title": "Rejected",
-      "description": "Claims a human reviewer rejected. Nothing is recorded in the claims system.",
+      "description": "A reviewer rejected the draft. Nothing was recorded in the claims system.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -336,6 +468,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -343,6 +476,9 @@
           ],
           "fields": "",
           "values": false
+        },
+        "text": {
+          "valueSize": 44
         }
       },
       "targets": [
@@ -359,12 +495,70 @@
         }
       ],
       "gridPos": {
-        "h": 5,
+        "h": 6,
         "w": 4,
-        "x": 16,
-        "y": 1
+        "x": 0,
+        "y": 7
       },
-      "id": 6
+      "id": 8
+    },
+    {
+      "type": "stat",
+      "title": "Needs attention",
+      "description": "The approval and the draft disagree, an idempotency key was reused for a different body, or the draft hash does not match.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "fnol-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "dark-red"
+          },
+          "decimals": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value",
+        "wideLayout": true,
+        "orientation": "auto",
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "text": {
+          "valueSize": 44
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "fnol-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH received AS (\n  SELECT case_id, received_at FROM (\n    SELECT case_id, min(ingested_at::timestamptz) AS received_at\n    FROM input.input_revisions\n    GROUP BY case_id\n  ) first_seen\n  WHERE $__timeFilter(received_at)\n),\nlatest AS (\n  SELECT DISTINCT ON (case_id) case_id, status, outcome, review_id, created_at\n  FROM output.drafts\n  ORDER BY case_id, seq DESC\n),\nroute AS (\n  SELECT DISTINCT ON (case_id) case_id, body_json::jsonb AS b\n  FROM input.decisions\n  WHERE kind = 'route'\n  ORDER BY case_id, input_revision DESC\n),\nclaims AS (\n  SELECT r.case_id, r.received_at, l.created_at::timestamptz AS drafted_at,\n    rv.status AS review_status, rv.reviewer, ro.b AS decision,\n    CASE\n      WHEN l.status = 'created' OR rec.case_id IS NOT NULL THEN 'Submitted'\n      WHEN l.outcome = 'duplicate' THEN 'Duplicate, not resubmitted'\n      WHEN rv.status = 'rejected' OR l.outcome = 'rejected' THEN 'Rejected'\n      WHEN l.outcome IN ('approval_mismatch', 'idempotency_conflict', 'hash_mismatch') THEN 'Needs attention'\n      WHEN rv.status = 'approved' THEN 'Accepted, awaiting submission'\n      WHEN rv.status = 'pending' THEN 'Awaiting reviewer'\n      ELSE 'In automated processing'\n    END AS stage\n  FROM received r\n  LEFT JOIN latest l ON l.case_id = r.case_id\n  LEFT JOIN mock.reviews rv ON rv.id = l.review_id\n  LEFT JOIN mock.records rec ON rec.case_id = r.case_id\n  LEFT JOIN route ro ON ro.case_id = r.case_id\n)\nSELECT count(*) FILTER (WHERE stage = 'Needs attention') AS claims FROM claims"
+        }
+      ],
+      "gridPos": {
+        "h": 6,
+        "w": 4,
+        "x": 4,
+        "y": 7
+      },
+      "id": 9
     },
     {
       "type": "stat",
@@ -407,6 +601,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -414,6 +609,9 @@
           ],
           "fields": "",
           "values": false
+        },
+        "text": {
+          "valueSize": 44
         }
       },
       "targets": [
@@ -430,12 +628,12 @@
         }
       ],
       "gridPos": {
-        "h": 5,
+        "h": 6,
         "w": 4,
-        "x": 20,
-        "y": 1
+        "x": 8,
+        "y": 7
       },
-      "id": 7
+      "id": 10
     },
     {
       "type": "barchart",
@@ -545,9 +743,9 @@
         "h": 9,
         "w": 14,
         "x": 0,
-        "y": 6
+        "y": 13
       },
-      "id": 8
+      "id": 11
     },
     {
       "type": "piechart",
@@ -609,9 +807,9 @@
         "h": 9,
         "w": 10,
         "x": 14,
-        "y": 6
+        "y": 13
       },
-      "id": 9
+      "id": 12
     },
     {
       "type": "row",
@@ -622,9 +820,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 15
+        "y": 22
       },
-      "id": 10
+      "id": 13
     },
     {
       "type": "stat",
@@ -651,6 +849,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -674,72 +873,17 @@
         }
       ],
       "gridPos": {
-        "h": 5,
+        "h": 8,
         "w": 6,
         "x": 0,
-        "y": 16
+        "y": 23
       },
-      "id": 11
+      "id": 14
     },
     {
       "type": "stat",
       "title": "AI cost per 1,000 claims",
-      "description": "Gemma 4 31B (Amazon Bedrock) model cost for every 1,000 claims at the current average, at standard on-demand pricing.",
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "fnol-postgres"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "fixed",
-            "fixedColor": "green"
-          },
-          "decimals": 2,
-          "unit": "currencyUSD"
-        },
-        "overrides": []
-      },
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "textMode": "value",
-        "wideLayout": true,
-        "showPercentChange": false,
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "fnol-postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "SELECT round((1000 * (coalesce(sum(input_tokens), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens), 0) / 1000.0 * ${output_price}) / NULLIF(count(DISTINCT case_id), 0))::numeric, 2) AS cost_usd\nFROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
-        }
-      ],
-      "gridPos": {
-        "h": 5,
-        "w": 6,
-        "x": 6,
-        "y": 16
-      },
-      "id": 12
-    },
-    {
-      "type": "stat",
-      "title": "Total AI cost",
-      "description": "Model spend for all claims processed in the period.",
+      "description": "Gemma 4 31B (Amazon Bedrock) cost for every 1,000 claims, at standard on-demand pricing. Prompt injection is the step 3 screen, summary is step 6, and total is the two combined.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -753,14 +897,61 @@
           "decimals": 4,
           "unit": "currencyUSD"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prompt injection"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Summary"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "value",
-        "wideLayout": true,
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "orientation": "vertical",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -780,16 +971,118 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT round((coalesce(sum(input_tokens), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens), 0) / 1000.0 * ${output_price})::numeric, 6) AS cost_usd FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
+          "rawSql": "SELECT round((1000 * (coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${output_price}) / NULLIF(count(DISTINCT case_id), 0))::numeric, 4) AS \"Prompt injection\", round((1000 * (coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${output_price}) / NULLIF(count(DISTINCT case_id), 0))::numeric, 4) AS \"Summary\", (round((1000 * (coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${output_price}) / NULLIF(count(DISTINCT case_id), 0))::numeric, 4) + round((1000 * (coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${output_price}) / NULLIF(count(DISTINCT case_id), 0))::numeric, 4)) AS \"Total\" FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
         }
       ],
       "gridPos": {
-        "h": 5,
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 23
+      },
+      "id": 15
+    },
+    {
+      "type": "stat",
+      "title": "Total AI cost",
+      "description": "Model spend for claims processed in the period. Prompt injection is the step 3 screen, summary is step 6, and total is the two combined.",
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "fnol-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "decimals": 6,
+          "unit": "currencyUSD"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prompt injection"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Summary"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "green"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "orientation": "vertical",
+        "showPercentChange": false,
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "fnol-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT round(((coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${output_price}))::numeric, 6) AS \"Prompt injection\", round(((coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${output_price}))::numeric, 6) AS \"Summary\", (round(((coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${output_price}))::numeric, 6) + round(((coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${output_price}))::numeric, 6)) AS \"Total\" FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
+        }
+      ],
+      "gridPos": {
+        "h": 8,
         "w": 6,
         "x": 12,
-        "y": 16
+        "y": 23
       },
-      "id": 13
+      "id": 16
     },
     {
       "type": "stat",
@@ -832,6 +1125,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -855,12 +1149,12 @@
         }
       ],
       "gridPos": {
-        "h": 5,
+        "h": 8,
         "w": 6,
         "x": 18,
-        "y": 16
+        "y": 23
       },
-      "id": 14
+      "id": 17
     },
     {
       "type": "row",
@@ -871,9 +1165,9 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 21
+        "y": 31
       },
-      "id": 15
+      "id": 18
     },
     {
       "type": "barchart",
@@ -935,9 +1229,9 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 22
+        "y": 32
       },
-      "id": 16
+      "id": 19
     },
     {
       "type": "table",
@@ -1064,9 +1358,9 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 22
+        "y": 32
       },
-      "id": 17
+      "id": 20
     }
   ],
   "version": 1

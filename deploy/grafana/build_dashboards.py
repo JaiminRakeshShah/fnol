@@ -96,12 +96,71 @@ STEP_LABEL = """CASE step WHEN '1' THEN '01 Intake' WHEN '2' THEN '02 Policy loo
     WHEN '8' THEN '08 Draft recorded' WHEN '9' THEN '09 Review requested' WHEN '10' THEN '10 Review polled'
     WHEN '11' THEN '11 Record lookup' WHEN '12' THEN '12 Record submitted' ELSE step END"""
 
-# Gemma is called in step 3 (injection screen) and step 6 (summary). Step 7 repeats step 6's
-# token counts and overlaps its timer, so it is excluded from cost and processing time.
+# Gemma is called in step 3 (prompt-injection screen) and step 6 (summary generation).
+# Step 7 repeats step 6's token counts and overlaps its timer, so it is excluded from
+# cost and processing time. Totals are the sum of the two Gemma steps.
+INJECTION_ROWS = "model_id IS NOT NULL AND step = '3'"
+SUMMARY_ROWS = "model_id IS NOT NULL AND step = '6'"
 MODEL_ROWS = "model_id IS NOT NULL AND step IN ('3', '6')"
 PROCESSING_ROWS = "case_id IS NOT NULL AND step::int <= 9 AND step <> '7'"
-COST = "(coalesce(sum(input_tokens), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens), 0) / 1000.0 * ${output_price})"
 TRACE_TIME = "$__timeFilter(started_at::timestamptz)"
+SPLIT_FIELDS = (("Prompt injection", INJECTION_ROWS), ("Summary", SUMMARY_ROWS), ("Total", MODEL_ROWS))
+
+
+def token_expr(predicate, part="both"):
+    if part == "input":
+        inner = "coalesce(input_tokens, 0)"
+    elif part == "output":
+        inner = "coalesce(output_tokens, 0)"
+    else:
+        inner = "coalesce(input_tokens, 0) + coalesce(output_tokens, 0)"
+    return f"coalesce(sum({inner}) FILTER (WHERE {predicate}), 0)"
+
+
+def cost_expr(predicate):
+    filt = f" FILTER (WHERE {predicate})"
+    return (
+        "(coalesce(sum(input_tokens)" + filt + ", 0) / 1000.0 * ${input_price}"
+        " + coalesce(sum(output_tokens)" + filt + ", 0) / 1000.0 * ${output_price})"
+    )
+
+
+def split_select(metric):
+    return ", ".join(f'{metric(predicate)} AS "{label}"' for label, predicate in SPLIT_FIELDS)
+
+
+def split_rounded(metric, decimals):
+    """Round each part, then show Total as their sum so the three figures add up."""
+    rendered = []
+    selected = []
+    for label, predicate in SPLIT_FIELDS:
+        if label == "Total":
+            continue
+        expr = f"round(({metric(predicate)})::numeric, {decimals})"
+        rendered.append(expr)
+        selected.append(f'{expr} AS "{label}"')
+    selected.append(f'({" + ".join(rendered)}) AS "Total"')
+    return ", ".join(selected)
+
+
+def input_tokens(predicate):
+    return token_expr(predicate, "input")
+
+
+def output_tokens(predicate):
+    return token_expr(predicate, "output")
+
+
+def tokens_per_claim(predicate):
+    return f"{token_expr(predicate)}::numeric / NULLIF(count(DISTINCT case_id), 0)"
+
+
+def cost_per_thousand(predicate):
+    return f"1000 * {cost_expr(predicate)} / NULLIF(count(DISTINCT case_id), 0)"
+
+
+def period_cost(predicate):
+    return cost_expr(predicate)
 
 GOLD_CHECKS = [
     ("classification", "Claim type"),
@@ -203,19 +262,31 @@ class Layout:
         self.y += h
 
 
-def stat(title, sql, description, color="blue", unit=None, decimals=0, thresholds=None):
+def _split_overrides(total_color):
+    return [
+        by_name("Prompt injection", ("color", {"mode": "fixed", "fixedColor": "orange"})),
+        by_name("Summary", ("color", {"mode": "fixed", "fixedColor": "purple"})),
+        by_name("Total", ("color", {"mode": "fixed", "fixedColor": total_color})),
+    ]
+
+
+def stat(title, sql, description, color="blue", unit=None, decimals=0, thresholds=None, split=False, value_size=None):
     defaults = {"color": {"mode": "fixed", "fixedColor": color}, "decimals": decimals}
     if thresholds:
         defaults["color"] = {"mode": "thresholds"}
         defaults["thresholds"] = {"mode": "absolute", "steps": thresholds}
     if unit:
         defaults["unit"] = unit
+    options = {"colorMode": "background", "graphMode": "none", "justifyMode": "center",
+               "textMode": "value_and_name" if split else "value",
+               "wideLayout": not split, "orientation": "vertical" if split else "auto",
+               "showPercentChange": False,
+               "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False}}
+    if value_size:
+        options["text"] = {"valueSize": value_size}
     return {"type": "stat", "title": title, "description": description, "datasource": PG,
-            "fieldConfig": {"defaults": defaults, "overrides": []},
-            "options": {"colorMode": "background", "graphMode": "none", "justifyMode": "center", "textMode": "value",
-                        "wideLayout": True, "showPercentChange": False,
-                        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False}},
-            "targets": [target(sql)]}
+            "fieldConfig": {"defaults": defaults, "overrides": _split_overrides(color) if split else []},
+            "options": options, "targets": [target(sql)]}
 
 
 def bars(title, sql, description, x_field, color="blue", unit=None, orientation="horizontal",
@@ -292,17 +363,34 @@ def stage_count(stage):
     return CLAIMS + f"SELECT count(*) FILTER (WHERE stage = '{stage}') AS claims FROM claims"
 
 
-P_RECEIVED = lambda: stat("Received", CLAIMS + "SELECT count(*) AS claims FROM claims",
-                          "Claims that entered intake in the selected period.", "blue")
-P_SORTED = lambda: stat("Sorted", CLAIMS + "SELECT count(*) FILTER (WHERE decision IS NOT NULL) AS claims FROM claims",
-                        "Claims the automation classified (collision, glass, theft) and routed to a handling path.", "blue")
-P_ACCEPTED = lambda: stat("Accepted", CLAIMS + "SELECT count(*) FILTER (WHERE review_status = 'approved') AS claims FROM claims",
-                          "Claims a human reviewer approved. Includes accepted claims not yet submitted and duplicates that were blocked from resubmission.",
-                          "semi-dark-green")
-P_SUBMITTED = lambda: stat("Submitted", stage_count("Submitted"),
-                           "Accepted claims recorded in the claims system. Work complete.", "green")
-P_REJECTED = lambda: stat("Rejected", stage_count("Rejected"),
-                          "Claims a human reviewer rejected. Nothing is recorded in the claims system.", "red")
+# Same pixel size on every glance tile. Auto-sizing shrinks "92%" below "12".
+GLANCE_VALUE = 44
+
+
+def glance(title, sql, description, color="blue", unit=None, decimals=0, thresholds=None):
+    return stat(title, sql, description, color, unit=unit, decimals=decimals, thresholds=thresholds, value_size=GLANCE_VALUE)
+
+
+P_RECEIVED = lambda: glance("Received", CLAIMS + "SELECT count(*) AS claims FROM claims",
+                            "Claims that entered intake in the selected period. Processing, Pending, Duplicate, Approved not processed, Submitted, Rejected, and Needs attention add up to this number.",
+                            "blue")
+P_PROCESSING = lambda: glance("Processing", stage_count("In automated processing"),
+                              "Still inside the automated pipeline. No draft is waiting on a person yet.", "light-blue")
+P_PENDING = lambda: glance("Pending", stage_count("Awaiting reviewer"),
+                           "A draft is with a reviewer and no decision has been made.", "orange")
+P_DUPLICATE = lambda: glance("Duplicate", stage_count("Duplicate, not resubmitted"),
+                             "A reviewer approved the draft, and the claims system refused a second record because this loss was already on file.",
+                             "purple")
+P_NOT_PROCESSED = lambda: glance("Approved, not processed", stage_count("Accepted, awaiting submission"),
+                                 "A reviewer approved the draft, and submission did not finish, so nothing was written to the claims system.",
+                                 "yellow")
+P_SUBMITTED = lambda: glance("Submitted", stage_count("Submitted"),
+                             "Approved drafts recorded in the claims system.", "green")
+P_REJECTED = lambda: glance("Rejected", stage_count("Rejected"),
+                            "A reviewer rejected the draft. Nothing was recorded in the claims system.", "red")
+P_ATTENTION = lambda: glance("Needs attention", stage_count("Needs attention"),
+                             "The approval and the draft disagree, an idempotency key was reused for a different body, or the draft hash does not match.",
+                             "dark-red")
 GOLD_THRESHOLDS = [{"color": "red", "value": None}, {"color": "orange", "value": 80}, {"color": "green", "value": 95}]
 SUCCESS_THRESHOLDS = [{"color": "red", "value": None}, {"color": "orange", "value": 90}, {"color": "green", "value": 95}]
 
@@ -317,7 +405,9 @@ PROCESSING_SQL = f"""SELECT round(avg(seconds)::numeric, 1) AS seconds FROM (
   GROUP BY case_id
 ) per_claim"""
 
-COST_TOTAL_SQL = f"SELECT round({COST}::numeric, 6) AS cost_usd FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}"
+COST_TOTAL_SQL = f"SELECT {split_rounded(period_cost, 6)} FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}"
+COST_PER_THOUSAND_SQL = f"SELECT {split_rounded(cost_per_thousand, 4)} FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}"
+MODEL_FROM = f"FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}"
 
 
 def journey():
@@ -391,24 +481,33 @@ GOLD_DESC = ("Share of benchmark claims whose AI-prepared draft passes every aut
 def executive():
     L = Layout()
     L.row("Claims at a glance")
-    L.place([(P_RECEIVED(), 4), (P_SORTED(), 4), (P_ACCEPTED(), 4), (P_SUBMITTED(), 4), (P_REJECTED(), 4),
-             (stat("Gold accuracy", GOLD_PASS_SQL, GOLD_DESC, unit="percent", decimals=0, thresholds=GOLD_THRESHOLDS), 4)], h=5)
+    # Two rows of the same tile size so "12" and "92%" use one font and one box.
+    L.place([
+        (P_RECEIVED(), 4), (P_PROCESSING(), 4), (P_PENDING(), 4),
+        (P_DUPLICATE(), 4), (P_NOT_PROCESSED(), 4), (P_SUBMITTED(), 4),
+    ], h=6)
+    L.place([
+        (P_REJECTED(), 4), (P_ATTENTION(), 4),
+        (glance("Gold accuracy", GOLD_PASS_SQL, GOLD_DESC, unit="percent", decimals=0, thresholds=GOLD_THRESHOLDS), 4),
+    ], h=6)
     L.place([(journey(), 14), (routing_donut(), 10)], h=9)
     L.row("Speed, cost and reliability")
     L.place([
         (stat("Processing time per claim", PROCESSING_SQL,
               "Average automated work per claim, from intake until the draft reaches a reviewer. Human review time is excluded.",
               "blue", unit="s", decimals=1), 6),
-        (stat("AI cost per 1,000 claims", f"""SELECT round((1000 * {COST} / NULLIF(count(DISTINCT case_id), 0))::numeric, 2) AS cost_usd
-FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}""",
-              "Gemma 4 31B (Amazon Bedrock) model cost for every 1,000 claims at the current average, at standard on-demand pricing.",
-              "green", unit="currencyUSD", decimals=2), 6),
-        (stat("Total AI cost", COST_TOTAL_SQL, "Model spend for all claims processed in the period.",
-              "green", unit="currencyUSD", decimals=4), 6),
+        (stat("AI cost per 1,000 claims", COST_PER_THOUSAND_SQL,
+              "Gemma 4 31B (Amazon Bedrock) cost for every 1,000 claims, at standard on-demand pricing. "
+              "Prompt injection is the step 3 screen, summary is step 6, and total is the two combined.",
+              "green", unit="currencyUSD", decimals=4, split=True), 6),
+        (stat("Total AI cost", COST_TOTAL_SQL,
+              "Model spend for claims processed in the period. Prompt injection is the step 3 screen, "
+              "summary is step 6, and total is the two combined.",
+              "green", unit="currencyUSD", decimals=6, split=True), 6),
         (stat("Automated step success rate", SUCCESS_SQL,
               "Share of automated pipeline steps that succeeded. Failed steps are retried or the claim is routed to a person.",
               unit="percent", decimals=1, thresholds=SUCCESS_THRESHOLDS), 6),
-    ], h=5)
+    ], h=8)
     L.row("Risk controls and follow-up")
     L.place([(risks(), 12), (waiting_table(), 12)], h=9)
     return dashboard("fnol-executive", "FNOL Executive Summary",
@@ -425,9 +524,12 @@ def operations():
     L.place([(table("Claims register", CLAIMS + f""", usage AS (
   SELECT case_id,
     sum(duration_ms) FILTER (WHERE {PROCESSING_ROWS}) / 1000.0 AS seconds,
-    sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) FILTER (WHERE {MODEL_ROWS}) AS tokens,
-    (coalesce(sum(input_tokens) FILTER (WHERE {MODEL_ROWS}), 0) / 1000.0 * ${{input_price}}
-      + coalesce(sum(output_tokens) FILTER (WHERE {MODEL_ROWS}), 0) / 1000.0 * ${{output_price}}) AS cost
+    {token_expr(INJECTION_ROWS)} AS injection_tokens,
+    {token_expr(SUMMARY_ROWS)} AS summary_tokens,
+    {token_expr(MODEL_ROWS)} AS tokens,
+    {cost_expr(INJECTION_ROWS)} AS injection_cost,
+    {cost_expr(SUMMARY_ROWS)} AS summary_cost,
+    {cost_expr(MODEL_ROWS)} AS cost
   FROM trace.trace_events
   WHERE case_id IS NOT NULL
   GROUP BY case_id
@@ -441,11 +543,15 @@ SELECT
   CASE c.review_status WHEN 'approved' THEN 'Accepted' WHEN 'rejected' THEN 'Rejected' WHEN 'pending' THEN 'Pending' ELSE '-' END AS "Reviewer decision",
   coalesce(c.reviewer, '-') AS "Reviewer",
   round(u.seconds::numeric, 1) AS "Processing (s)",
-  u.tokens AS "Gemma tokens",
-  round(u.cost::numeric, 6) AS "AI cost"
+  coalesce(u.injection_tokens, 0) AS "Prompt injection tokens",
+  coalesce(u.summary_tokens, 0) AS "Summary tokens",
+  coalesce(u.tokens, 0) AS "Total tokens",
+  round(coalesce(u.injection_cost, 0)::numeric, 6) AS "Prompt injection AI cost",
+  round(coalesce(u.summary_cost, 0)::numeric, 6) AS "Summary AI cost",
+  round(coalesce(u.injection_cost, 0)::numeric, 6) + round(coalesce(u.summary_cost, 0)::numeric, 6) AS "Total AI cost"
 FROM claims c
 LEFT JOIN usage u ON u.case_id = c.case_id
-ORDER BY c.case_id""", "One row per claim received in the period: how it was sorted, where it is now, who decided, and what it cost.",
+ORDER BY c.case_id""", "One row per claim received in the period. Token counts and AI cost are split between the prompt-injection screen (step 3) and summary generation (step 6). Totals add those two together. Step 7 repeats the summary tokens and is excluded.",
         overrides=[by_name("Stage", ("mappings", STAGE_COLORS), ("custom.cellOptions", COLOR_TEXT)),
                    by_name("Reviewer decision", ("mappings", color_map([("Accepted", "green"), ("Rejected", "red"), ("Pending", "orange")])),
                            ("custom.cellOptions", COLOR_TEXT)),
@@ -453,8 +559,14 @@ ORDER BY c.case_id""", "One row per claim received in the period: how it was sor
                    by_name("Processing (s)", ("unit", "s"), ("decimals", 1)),
                    by_name("Stage", ("custom.width", 220)),
                    by_name("Claim", ("custom.width", 100)),
-                   by_name("Gemma tokens", ("unit", "locale"), ("decimals", 0)),
-                   by_name("AI cost", ("unit", "currencyUSD"), ("decimals", 6))]), 24)], h=14)
+                   by_regex("tokens$", ("unit", "locale"), ("decimals", 0)),
+                   by_regex("cost$", ("unit", "currencyUSD"), ("decimals", 6)),
+                   by_name("Prompt injection tokens", ("custom.width", 160)),
+                   by_name("Summary tokens", ("custom.width", 130)),
+                   by_name("Total tokens", ("custom.width", 120)),
+                   by_name("Prompt injection AI cost", ("custom.width", 180)),
+                   by_name("Summary AI cost", ("custom.width", 150)),
+                   by_name("Total AI cost", ("custom.width", 140))]), 24)], h=16)
     L.place([
         (bars("Sorted by claim type", CLAIMS + f"""SELECT {CLASS_LABEL.format(b='decision')} AS classification, count(*) AS claims
 FROM claims WHERE decision IS NOT NULL GROUP BY 1 ORDER BY 2 DESC, 1""",
@@ -490,26 +602,37 @@ ORDER BY passed, case_id""", "Each benchmark claim's latest draft scored against
                    by_name("Claim", ("custom.width", 100))]), 24)], h=14)
 
     L.row("Gemma model: tokens and cost")
+    call_split = """count(*) FILTER (WHERE step = '3') AS "Prompt injection",
+  count(*) FILTER (WHERE step = '6') AS "Summary", count(*) AS "Total" """
     L.place([
-        (stat("Input tokens", f"SELECT coalesce(sum(input_tokens), 0) AS tokens FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}",
-              "Tokens sent to Gemma 4 31B (injection screen and claim summary).", "blue", unit="locale"), 6),
-        (stat("Output tokens", f"SELECT coalesce(sum(output_tokens), 0) AS tokens FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}",
-              "Tokens generated by Gemma 4 31B.", "blue", unit="locale"), 6),
-        (stat("Tokens per claim", f"""SELECT round(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))::numeric / NULLIF(count(DISTINCT case_id), 0)) AS tokens
-FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}""", "Average input plus output tokens per claim.", "blue", unit="locale"), 6),
-        (stat("Model calls", f"SELECT count(*) AS calls FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}",
-              "Gemma invocations: one injection screen and one summary per claim, plus any retries.", "blue"), 6),
-    ], h=4)
+        (stat("Input tokens", f"SELECT {split_select(input_tokens)} {MODEL_FROM}",
+              "Tokens sent to Gemma 4 31B. Prompt injection is the step 3 screen, summary is step 6, and total is the two combined.",
+              "blue", unit="locale", split=True), 6),
+        (stat("Output tokens", f"SELECT {split_select(output_tokens)} {MODEL_FROM}",
+              "Tokens generated by Gemma 4 31B, split the same way as input tokens.",
+              "blue", unit="locale", split=True), 6),
+        (stat("Tokens per claim", f"SELECT {split_rounded(tokens_per_claim, 0)} {MODEL_FROM}",
+              "Average input plus output tokens per claim. Prompt injection, summary, and the combined total.",
+              "blue", unit="locale", split=True), 6),
+        (stat("Model calls", f"SELECT {call_split} {MODEL_FROM}",
+              "Gemma invocations. One prompt-injection screen and one summary per claim, plus any retries.",
+              "blue", split=True), 6),
+    ], h=8)
     L.place([
-        (bars("Tokens by model step", f"""SELECT CASE step WHEN '3' THEN 'Injection screen (step 3)' ELSE 'Claim summary (step 6)' END AS step_name,
+        (bars("Tokens by model step", f"""SELECT CASE step WHEN '3' THEN 'Prompt injection' ELSE 'Summary' END AS step_name,
   sum(input_tokens) AS "Input tokens", sum(output_tokens) AS "Output tokens"
 FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}
-GROUP BY step ORDER BY step""", "Where the tokens go. The claim summary carries most of the input context.",
+GROUP BY step ORDER BY step""", "Input and output tokens for the prompt-injection screen and for summary generation.",
               "step_name", legend=True), 12),
-        (bars("AI cost by claim", f"""SELECT case_id, round({COST}::numeric, 6) AS cost_usd
+        (bars("AI cost by claim", f"""SELECT case_id,
+  round({cost_expr(INJECTION_ROWS)}::numeric, 6) AS "Prompt injection",
+  round({cost_expr(SUMMARY_ROWS)}::numeric, 6) AS "Summary"
 FROM trace.trace_events WHERE {MODEL_ROWS} AND {TRACE_TIME}
-GROUP BY case_id ORDER BY case_id""", "Model cost for each claim. Outliers usually mean long documents or retries.",
-              "case_id", color="green", unit="currencyUSD", orientation="vertical", rotate=-45), 12),
+GROUP BY case_id ORDER BY case_id""",
+              "Model cost for each claim, split between the prompt-injection screen and summary generation. Stacked height is the total.",
+              "case_id", unit="currencyUSD", orientation="vertical", rotate=-45, stacked=True, legend=True,
+              overrides=[by_name("Prompt injection", ("color", {"mode": "fixed", "fixedColor": "orange"})),
+                         by_name("Summary", ("color", {"mode": "fixed", "fixedColor": "purple"}))]), 12),
     ], h=8)
 
     L.row("Latency")

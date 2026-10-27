@@ -99,7 +99,7 @@
     {
       "type": "table",
       "title": "Claims register",
-      "description": "One row per claim received in the period: how it was sorted, where it is now, who decided, and what it cost.",
+      "description": "One row per claim received in the period. Token counts and AI cost are split between the prompt-injection screen (step 3) and summary generation (step 6). Totals add those two together. Step 7 repeats the summary tokens and is excluded.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -256,8 +256,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "Gemma tokens"
+              "id": "byRegexp",
+              "options": "tokens$"
             },
             "properties": [
               {
@@ -272,8 +272,8 @@
           },
           {
             "matcher": {
-              "id": "byName",
-              "options": "AI cost"
+              "id": "byRegexp",
+              "options": "cost$"
             },
             "properties": [
               {
@@ -283,6 +283,78 @@
               {
                 "id": "decimals",
                 "value": 6
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prompt injection tokens"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 160
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Summary tokens"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 130
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total tokens"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 120
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prompt injection AI cost"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Summary AI cost"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 150
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total AI cost"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 140
               }
             ]
           }
@@ -306,11 +378,11 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH received AS (\n  SELECT case_id, received_at FROM (\n    SELECT case_id, min(ingested_at::timestamptz) AS received_at\n    FROM input.input_revisions\n    GROUP BY case_id\n  ) first_seen\n  WHERE $__timeFilter(received_at)\n),\nlatest AS (\n  SELECT DISTINCT ON (case_id) case_id, status, outcome, review_id, created_at\n  FROM output.drafts\n  ORDER BY case_id, seq DESC\n),\nroute AS (\n  SELECT DISTINCT ON (case_id) case_id, body_json::jsonb AS b\n  FROM input.decisions\n  WHERE kind = 'route'\n  ORDER BY case_id, input_revision DESC\n),\nclaims AS (\n  SELECT r.case_id, r.received_at, l.created_at::timestamptz AS drafted_at,\n    rv.status AS review_status, rv.reviewer, ro.b AS decision,\n    CASE\n      WHEN l.status = 'created' OR rec.case_id IS NOT NULL THEN 'Submitted'\n      WHEN l.outcome = 'duplicate' THEN 'Duplicate, not resubmitted'\n      WHEN rv.status = 'rejected' OR l.outcome = 'rejected' THEN 'Rejected'\n      WHEN l.outcome IN ('approval_mismatch', 'idempotency_conflict', 'hash_mismatch') THEN 'Needs attention'\n      WHEN rv.status = 'approved' THEN 'Accepted, awaiting submission'\n      WHEN rv.status = 'pending' THEN 'Awaiting reviewer'\n      ELSE 'In automated processing'\n    END AS stage\n  FROM received r\n  LEFT JOIN latest l ON l.case_id = r.case_id\n  LEFT JOIN mock.reviews rv ON rv.id = l.review_id\n  LEFT JOIN mock.records rec ON rec.case_id = r.case_id\n  LEFT JOIN route ro ON ro.case_id = r.case_id\n)\n, usage AS (\n  SELECT case_id,\n    sum(duration_ms) FILTER (WHERE case_id IS NOT NULL AND step::int <= 9 AND step <> '7') / 1000.0 AS seconds,\n    sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step IN ('3', '6')) AS tokens,\n    (coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step IN ('3', '6')), 0) / 1000.0 * ${input_price}\n      + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step IN ('3', '6')), 0) / 1000.0 * ${output_price}) AS cost\n  FROM trace.trace_events\n  WHERE case_id IS NOT NULL\n  GROUP BY case_id\n)\nSELECT\n  c.case_id AS \"Claim\",\n  c.received_at AS \"Received\",\n  initcap(coalesce(c.decision ->> 'classification', 'Not sorted')) AS \"Classification\",\n  CASE c.decision ->> 'route'\n    WHEN 'standard' THEN 'Standard handling'\n    WHEN 'urgent' THEN 'Urgent'\n    WHEN 'specialist' THEN 'Specialist team'\n    WHEN 'manual_review' THEN 'Manual review'\n    ELSE coalesce(c.decision ->> 'route', 'Not sorted') END AS \"Route\",\n  c.stage AS \"Stage\",\n  CASE c.review_status WHEN 'approved' THEN 'Accepted' WHEN 'rejected' THEN 'Rejected' WHEN 'pending' THEN 'Pending' ELSE '-' END AS \"Reviewer decision\",\n  coalesce(c.reviewer, '-') AS \"Reviewer\",\n  round(u.seconds::numeric, 1) AS \"Processing (s)\",\n  u.tokens AS \"Gemma tokens\",\n  round(u.cost::numeric, 6) AS \"AI cost\"\nFROM claims c\nLEFT JOIN usage u ON u.case_id = c.case_id\nORDER BY c.case_id"
+          "rawSql": "WITH received AS (\n  SELECT case_id, received_at FROM (\n    SELECT case_id, min(ingested_at::timestamptz) AS received_at\n    FROM input.input_revisions\n    GROUP BY case_id\n  ) first_seen\n  WHERE $__timeFilter(received_at)\n),\nlatest AS (\n  SELECT DISTINCT ON (case_id) case_id, status, outcome, review_id, created_at\n  FROM output.drafts\n  ORDER BY case_id, seq DESC\n),\nroute AS (\n  SELECT DISTINCT ON (case_id) case_id, body_json::jsonb AS b\n  FROM input.decisions\n  WHERE kind = 'route'\n  ORDER BY case_id, input_revision DESC\n),\nclaims AS (\n  SELECT r.case_id, r.received_at, l.created_at::timestamptz AS drafted_at,\n    rv.status AS review_status, rv.reviewer, ro.b AS decision,\n    CASE\n      WHEN l.status = 'created' OR rec.case_id IS NOT NULL THEN 'Submitted'\n      WHEN l.outcome = 'duplicate' THEN 'Duplicate, not resubmitted'\n      WHEN rv.status = 'rejected' OR l.outcome = 'rejected' THEN 'Rejected'\n      WHEN l.outcome IN ('approval_mismatch', 'idempotency_conflict', 'hash_mismatch') THEN 'Needs attention'\n      WHEN rv.status = 'approved' THEN 'Accepted, awaiting submission'\n      WHEN rv.status = 'pending' THEN 'Awaiting reviewer'\n      ELSE 'In automated processing'\n    END AS stage\n  FROM received r\n  LEFT JOIN latest l ON l.case_id = r.case_id\n  LEFT JOIN mock.reviews rv ON rv.id = l.review_id\n  LEFT JOIN mock.records rec ON rec.case_id = r.case_id\n  LEFT JOIN route ro ON ro.case_id = r.case_id\n)\n, usage AS (\n  SELECT case_id,\n    sum(duration_ms) FILTER (WHERE case_id IS NOT NULL AND step::int <= 9 AND step <> '7') / 1000.0 AS seconds,\n    coalesce(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) AS injection_tokens,\n    coalesce(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) AS summary_tokens,\n    coalesce(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step IN ('3', '6')), 0) AS tokens,\n    (coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${output_price}) AS injection_cost,\n    (coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${output_price}) AS summary_cost,\n    (coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step IN ('3', '6')), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step IN ('3', '6')), 0) / 1000.0 * ${output_price}) AS cost\n  FROM trace.trace_events\n  WHERE case_id IS NOT NULL\n  GROUP BY case_id\n)\nSELECT\n  c.case_id AS \"Claim\",\n  c.received_at AS \"Received\",\n  initcap(coalesce(c.decision ->> 'classification', 'Not sorted')) AS \"Classification\",\n  CASE c.decision ->> 'route'\n    WHEN 'standard' THEN 'Standard handling'\n    WHEN 'urgent' THEN 'Urgent'\n    WHEN 'specialist' THEN 'Specialist team'\n    WHEN 'manual_review' THEN 'Manual review'\n    ELSE coalesce(c.decision ->> 'route', 'Not sorted') END AS \"Route\",\n  c.stage AS \"Stage\",\n  CASE c.review_status WHEN 'approved' THEN 'Accepted' WHEN 'rejected' THEN 'Rejected' WHEN 'pending' THEN 'Pending' ELSE '-' END AS \"Reviewer decision\",\n  coalesce(c.reviewer, '-') AS \"Reviewer\",\n  round(u.seconds::numeric, 1) AS \"Processing (s)\",\n  coalesce(u.injection_tokens, 0) AS \"Prompt injection tokens\",\n  coalesce(u.summary_tokens, 0) AS \"Summary tokens\",\n  coalesce(u.tokens, 0) AS \"Total tokens\",\n  round(coalesce(u.injection_cost, 0)::numeric, 6) AS \"Prompt injection AI cost\",\n  round(coalesce(u.summary_cost, 0)::numeric, 6) AS \"Summary AI cost\",\n  round(coalesce(u.injection_cost, 0)::numeric, 6) + round(coalesce(u.summary_cost, 0)::numeric, 6) AS \"Total AI cost\"\nFROM claims c\nLEFT JOIN usage u ON u.case_id = c.case_id\nORDER BY c.case_id"
         }
       ],
       "gridPos": {
-        "h": 14,
+        "h": 16,
         "w": 24,
         "x": 0,
         "y": 1
@@ -377,7 +449,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 17
       },
       "id": 3
     },
@@ -471,7 +543,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 17
       },
       "id": 4
     },
@@ -484,7 +556,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 23
+        "y": 25
       },
       "id": 5
     },
@@ -548,7 +620,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 24
+        "y": 26
       },
       "id": 6
     },
@@ -653,7 +725,7 @@
         "h": 14,
         "w": 24,
         "x": 0,
-        "y": 31
+        "y": 33
       },
       "id": 7
     },
@@ -666,14 +738,14 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 45
+        "y": 47
       },
       "id": 8
     },
     {
       "type": "stat",
       "title": "Input tokens",
-      "description": "Tokens sent to Gemma 4 31B (injection screen and claim summary).",
+      "description": "Tokens sent to Gemma 4 31B. Prompt injection is the step 3 screen, summary is step 6, and total is the two combined.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -687,14 +759,61 @@
           "decimals": 0,
           "unit": "locale"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prompt injection"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Summary"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "value",
-        "wideLayout": true,
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "orientation": "vertical",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -714,21 +833,21 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT coalesce(sum(input_tokens), 0) AS tokens FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
+          "rawSql": "SELECT coalesce(sum(coalesce(input_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) AS \"Prompt injection\", coalesce(sum(coalesce(input_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) AS \"Summary\", coalesce(sum(coalesce(input_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step IN ('3', '6')), 0) AS \"Total\" FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
         }
       ],
       "gridPos": {
-        "h": 4,
+        "h": 8,
         "w": 6,
         "x": 0,
-        "y": 46
+        "y": 48
       },
       "id": 9
     },
     {
       "type": "stat",
       "title": "Output tokens",
-      "description": "Tokens generated by Gemma 4 31B.",
+      "description": "Tokens generated by Gemma 4 31B, split the same way as input tokens.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -742,14 +861,61 @@
           "decimals": 0,
           "unit": "locale"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prompt injection"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Summary"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "value",
-        "wideLayout": true,
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "orientation": "vertical",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -769,21 +935,21 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT coalesce(sum(output_tokens), 0) AS tokens FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
+          "rawSql": "SELECT coalesce(sum(coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) AS \"Prompt injection\", coalesce(sum(coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) AS \"Summary\", coalesce(sum(coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step IN ('3', '6')), 0) AS \"Total\" FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
         }
       ],
       "gridPos": {
-        "h": 4,
+        "h": 8,
         "w": 6,
         "x": 6,
-        "y": 46
+        "y": 48
       },
       "id": 10
     },
     {
       "type": "stat",
       "title": "Tokens per claim",
-      "description": "Average input plus output tokens per claim.",
+      "description": "Average input plus output tokens per claim. Prompt injection, summary, and the combined total.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -797,14 +963,61 @@
           "decimals": 0,
           "unit": "locale"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prompt injection"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Summary"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "value",
-        "wideLayout": true,
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "orientation": "vertical",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -824,21 +1037,21 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT round(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0))::numeric / NULLIF(count(DISTINCT case_id), 0)) AS tokens\nFROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
+          "rawSql": "SELECT round((coalesce(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0)::numeric / NULLIF(count(DISTINCT case_id), 0))::numeric, 0) AS \"Prompt injection\", round((coalesce(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0)::numeric / NULLIF(count(DISTINCT case_id), 0))::numeric, 0) AS \"Summary\", (round((coalesce(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0)::numeric / NULLIF(count(DISTINCT case_id), 0))::numeric, 0) + round((coalesce(sum(coalesce(input_tokens, 0) + coalesce(output_tokens, 0)) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0)::numeric / NULLIF(count(DISTINCT case_id), 0))::numeric, 0)) AS \"Total\" FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
         }
       ],
       "gridPos": {
-        "h": 4,
+        "h": 8,
         "w": 6,
         "x": 12,
-        "y": 46
+        "y": 48
       },
       "id": 11
     },
     {
       "type": "stat",
       "title": "Model calls",
-      "description": "Gemma invocations: one injection screen and one summary per claim, plus any retries.",
+      "description": "Gemma invocations. One prompt-injection screen and one summary per claim, plus any retries.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -851,14 +1064,61 @@
           },
           "decimals": 0
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prompt injection"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Summary"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Total"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "blue"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "colorMode": "background",
         "graphMode": "none",
         "justifyMode": "center",
-        "textMode": "value",
-        "wideLayout": true,
+        "textMode": "value_and_name",
+        "wideLayout": false,
+        "orientation": "vertical",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -878,21 +1138,21 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT count(*) AS calls FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
+          "rawSql": "SELECT count(*) FILTER (WHERE step = '3') AS \"Prompt injection\",\n  count(*) FILTER (WHERE step = '6') AS \"Summary\", count(*) AS \"Total\"  FROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)"
         }
       ],
       "gridPos": {
-        "h": 4,
+        "h": 8,
         "w": 6,
         "x": 18,
-        "y": 46
+        "y": 48
       },
       "id": 12
     },
     {
       "type": "barchart",
       "title": "Tokens by model step",
-      "description": "Where the tokens go. The claim summary carries most of the input context.",
+      "description": "Input and output tokens for the prompt-injection screen and for summary generation.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -941,21 +1201,21 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT CASE step WHEN '3' THEN 'Injection screen (step 3)' ELSE 'Claim summary (step 6)' END AS step_name,\n  sum(input_tokens) AS \"Input tokens\", sum(output_tokens) AS \"Output tokens\"\nFROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)\nGROUP BY step ORDER BY step"
+          "rawSql": "SELECT CASE step WHEN '3' THEN 'Prompt injection' ELSE 'Summary' END AS step_name,\n  sum(input_tokens) AS \"Input tokens\", sum(output_tokens) AS \"Output tokens\"\nFROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)\nGROUP BY step ORDER BY step"
         }
       ],
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 50
+        "y": 56
       },
       "id": 13
     },
     {
       "type": "barchart",
       "title": "AI cost by claim",
-      "description": "Model cost for each claim. Outliers usually mean long documents or retries.",
+      "description": "Model cost for each claim, split between the prompt-injection screen and summary generation. Stacked height is the total.",
       "datasource": {
         "type": "grafana-postgresql-datasource",
         "uid": "fnol-postgres"
@@ -964,8 +1224,7 @@
         "defaults": {
           "min": 0,
           "color": {
-            "mode": "fixed",
-            "fixedColor": "green"
+            "mode": "palette-classic"
           },
           "custom": {
             "fillOpacity": 85,
@@ -975,7 +1234,38 @@
           },
           "unit": "currencyUSD"
         },
-        "overrides": []
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Prompt injection"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "orange"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Summary"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "purple"
+                }
+              }
+            ]
+          }
+        ]
       },
       "options": {
         "xField": "case_id",
@@ -983,15 +1273,15 @@
         "showValue": "always",
         "barWidth": 0.7,
         "groupWidth": 0.75,
-        "stacking": "none",
+        "stacking": "normal",
         "xTickLabelRotation": -45,
         "legend": {
-          "showLegend": false,
+          "showLegend": true,
           "displayMode": "list",
           "placement": "bottom"
         },
         "tooltip": {
-          "mode": "single",
+          "mode": "multi",
           "sort": "none"
         }
       },
@@ -1005,14 +1295,14 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT case_id, round((coalesce(sum(input_tokens), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens), 0) / 1000.0 * ${output_price})::numeric, 6) AS cost_usd\nFROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)\nGROUP BY case_id ORDER BY case_id"
+          "rawSql": "SELECT case_id,\n  round((coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '3'), 0) / 1000.0 * ${output_price})::numeric, 6) AS \"Prompt injection\",\n  round((coalesce(sum(input_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${input_price} + coalesce(sum(output_tokens) FILTER (WHERE model_id IS NOT NULL AND step = '6'), 0) / 1000.0 * ${output_price})::numeric, 6) AS \"Summary\"\nFROM trace.trace_events WHERE model_id IS NOT NULL AND step IN ('3', '6') AND $__timeFilter(started_at::timestamptz)\nGROUP BY case_id ORDER BY case_id"
         }
       ],
       "gridPos": {
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 50
+        "y": 56
       },
       "id": 14
     },
@@ -1025,7 +1315,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 58
+        "y": 64
       },
       "id": 15
     },
@@ -1054,6 +1344,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -1080,7 +1371,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 59
+        "y": 65
       },
       "id": 16
     },
@@ -1143,7 +1434,7 @@
         "h": 10,
         "w": 10,
         "x": 4,
-        "y": 59
+        "y": 65
       },
       "id": 17
     },
@@ -1207,7 +1498,7 @@
         "h": 10,
         "w": 10,
         "x": 14,
-        "y": 59
+        "y": 65
       },
       "id": 18
     },
@@ -1236,6 +1527,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -1262,7 +1554,7 @@
         "h": 5,
         "w": 4,
         "x": 0,
-        "y": 64
+        "y": 70
       },
       "id": 19
     },
@@ -1275,7 +1567,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 69
+        "y": 75
       },
       "id": 20
     },
@@ -1303,6 +1595,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -1329,7 +1622,7 @@
         "h": 4,
         "w": 6,
         "x": 0,
-        "y": 70
+        "y": 76
       },
       "id": 21
     },
@@ -1357,6 +1650,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -1383,7 +1677,7 @@
         "h": 4,
         "w": 6,
         "x": 6,
-        "y": 70
+        "y": 76
       },
       "id": 22
     },
@@ -1411,6 +1705,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -1437,7 +1732,7 @@
         "h": 4,
         "w": 6,
         "x": 12,
-        "y": 70
+        "y": 76
       },
       "id": 23
     },
@@ -1477,6 +1772,7 @@
         "justifyMode": "center",
         "textMode": "value",
         "wideLayout": true,
+        "orientation": "auto",
         "showPercentChange": false,
         "reduceOptions": {
           "calcs": [
@@ -1503,7 +1799,7 @@
         "h": 4,
         "w": 6,
         "x": 18,
-        "y": 70
+        "y": 76
       },
       "id": 24
     },
@@ -1567,7 +1863,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 74
+        "y": 80
       },
       "id": 25
     },
@@ -1656,7 +1952,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 74
+        "y": 80
       },
       "id": 26
     },
@@ -1669,7 +1965,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 82
+        "y": 88
       },
       "id": 27
     },
@@ -1734,7 +2030,7 @@
         "h": 7,
         "w": 6,
         "x": 0,
-        "y": 83
+        "y": 89
       },
       "id": 28
     },
@@ -1799,7 +2095,7 @@
         "h": 7,
         "w": 6,
         "x": 6,
-        "y": 83
+        "y": 89
       },
       "id": 29
     },
@@ -1863,7 +2159,7 @@
         "h": 7,
         "w": 6,
         "x": 12,
-        "y": 83
+        "y": 89
       },
       "id": 30
     },
@@ -1927,7 +2223,7 @@
         "h": 7,
         "w": 6,
         "x": 18,
-        "y": 83
+        "y": 89
       },
       "id": 31
     },
@@ -1997,7 +2293,7 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 90
+        "y": 96
       },
       "id": 32
     }

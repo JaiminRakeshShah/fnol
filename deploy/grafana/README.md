@@ -2,8 +2,8 @@
 
 Local Grafana with two dashboards over the live FNOL data in `fnol-postgres` and CloudWatch:
 
-- **FNOL Executive Summary** (`fnol-executive`, home page): claims received, sorted, accepted, submitted and rejected, gold-check accuracy, claim journey, processing time, AI cost, step success rate, risks caught and claims waiting on a person.
-- **FNOL Operations & AI Performance** (`fnol-ops`): per-claim register, decisions by reviewer, gold-check failures by check and by claim, Gemma tokens, step latency, errors and AWS health.
+- **FNOL Executive Summary** (`fnol-executive`, home page): claims received, then a breakdown that adds up to that total (processing, pending, duplicate, approved but not processed, submitted, rejected, needs attention), gold-check accuracy, claim journey, processing time, AI cost split into prompt injection, summary, and total, step success rate, risks caught and claims waiting on a person.
+- **FNOL Operations & AI Performance** (`fnol-ops`): per-claim register with prompt-injection and summary tokens and cost, decisions by reviewer, gold-check failures by check and by claim, Gemma token and cost breakdown, step latency, errors and AWS health.
 
 Headline numbers appear only on the executive summary. The operations dashboard holds the drill-down behind them, so the two never repeat a panel.
 
