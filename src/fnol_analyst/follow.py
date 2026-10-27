@@ -1,12 +1,13 @@
 """Analyst process that stays running.
 
-A background pass looks for input revisions that have no review yet. For each
-one it runs policy, rules, citations, the draft, the Gemma summary, and
-POST /v1/reviews. It does not call intake again and it does not approve.
+Every poll does two things. It queues input revisions that have no review yet:
+policy, rules, citations, the draft, the Gemma summary, and POST /v1/reviews.
+Then it reads every open review. A decision that is still pending stays put.
+An approval is copied onto the draft and filed. A rejection is copied and not
+filed. The poll does not approve.
 
-The HTTP server is the webhook the reviewer calls after a human decision.
-One POST copies that decision onto the draft and, for an approval, files
-the claim.
+The HTTP server is the same copy-forward step, called once when the reviewer
+can reach this process.
 """
 
 from __future__ import annotations
@@ -84,13 +85,73 @@ def run_queue_pass() -> list[dict[str, Any]]:
     return rows
 
 
+def _review_decision(client: AnalystClient, review_id: str) -> str | None:
+    """Read the human decision without writing a trace row for a still-pending review."""
+    status, body = client._call_transport(
+        "GET",
+        f"{client.mock_url.rstrip('/')}/v1/reviews/{review_id}",
+        None,
+        None,
+    )
+    if status != 200 or not isinstance(body, dict):
+        raise AnalystError("review_poll_failed", f"review poll failed with HTTP {status}")
+    decision = body.get("status")
+    return decision if isinstance(decision, str) else None
+
+
+def poll_open_reviews(client: AnalystClient) -> dict[str, Any]:
+    """Copy forward any open review a person has already decided.
+
+    Pending reviews are only counted. Approved and rejected reviews go through
+    ``advance_case``, which files an approval and leaves a rejection unfiled.
+    """
+    waiting: list[str] = []
+    moved: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    records = list(client.stores.output.in_review()) + list(client.stores.output.approved_unfiled())
+    for record in records:
+        case_id = record.case_id
+        if not case_id or case_id in seen:
+            continue
+        seen.add(case_id)
+        try:
+            if record.status == "approved" and record.outcome == "approved":
+                moved.append(advance_case(client, case_id))
+                continue
+            if not record.review_id:
+                moved.append({"case_id": case_id, "error": "review_missing"})
+                continue
+            decision = _review_decision(client, record.review_id)
+            if decision in {"approved", "rejected"}:
+                moved.append(advance_case(client, case_id))
+            else:
+                waiting.append(case_id)
+        except Exception as exc:
+            code = getattr(exc, "error_code", None) or exc.__class__.__name__
+            moved.append({"case_id": case_id, "error": code})
+    print(f"review poll: {len(waiting)} waiting {waiting}", flush=True)
+    for row in moved:
+        print(f"review poll {row}", flush=True)
+    return {"waiting": waiting, "moved": moved}
+
+
+def run_review_pass() -> dict[str, Any]:
+    """One look at the open reviews."""
+    with AnalystClient() as client:
+        return poll_open_reviews(client)
+
+
 def queue_loop(interval: float) -> None:
-    """Keep queueing new revisions until the process stops."""
+    """Queue new revisions and copy human decisions forward until the process stops."""
     while True:
         try:
             run_queue_pass()
         except Exception as exc:
             print(f"queue pass failed: {exc}", flush=True)
+        try:
+            run_review_pass()
+        except Exception as exc:
+            print(f"review poll failed: {exc}", flush=True)
         time.sleep(interval)
 
 
@@ -102,7 +163,7 @@ def start_queue_loop() -> None:
     threading.Thread(
         target=queue_loop, args=(interval,), name="fnol-queue", daemon=True
     ).start()
-    print(f"queue loop every {interval:g}s", flush=True)
+    print(f"queue and review poll every {interval:g}s", flush=True)
 
 
 def serve(host: str | None = None, port: int | None = None) -> None:
