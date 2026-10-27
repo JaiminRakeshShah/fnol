@@ -232,6 +232,10 @@ class FakeClient:
         self._call("file", case_id)
         return {"filed": case_id}
 
+    def enqueue_pending(self):
+        self._call("enqueue_pending")
+        return [{"case_id": "C1", "action": "queued"}]
+
     @staticmethod
     def _draft(case_id):
         return SimpleNamespace(
@@ -290,6 +294,12 @@ class AnalystCliTests(unittest.TestCase):
         code, out, _, client = self.invoke(["prepare"])
         self.assertEqual(json.loads(out)["exported"], "submissions/results.json")
         self.assertEqual(client.calls[0], ("prepare", (), {"workers": 3}))
+
+    def test_queue_prints_the_pass(self):
+        code, out, _, client = self.invoke(["queue"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(out), [{"case_id": "C1", "action": "queued"}])
+        self.assertEqual(client.calls, [("enqueue_pending", (), {})])
 
     def test_build_one_and_all(self):
         code, out, _, client = self.invoke(["build", "--case-id", "C1"])

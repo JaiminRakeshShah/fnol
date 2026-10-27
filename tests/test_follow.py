@@ -249,8 +249,76 @@ class _FakeClientCM:
         return False
 
 
+class _ReviewOutput:
+    def __init__(self, in_review=(), approved=()):
+        self._in_review = list(in_review)
+        self._approved = list(approved)
+
+    def in_review(self):
+        return list(self._in_review)
+
+    def approved_unfiled(self):
+        return list(self._approved)
+
+
+class _PollClient:
+    def __init__(self, records, decisions):
+        self.stores = SimpleNamespace(output=_ReviewOutput(records))
+        self.mock_url = "http://enterprise"
+        self.decisions = decisions
+        self.advanced = []
+
+    def _call_transport(self, method, url, body, headers):
+        review_id = url.rsplit("/", 1)[-1]
+        return 200, {"status": self.decisions.get(review_id, "pending")}
+
+
+class ReviewPollTests(TestCase):
+    def test_pending_is_counted_and_not_advanced(self):
+        record = SimpleNamespace(case_id="AUTO-D01", review_id="rev_1", status="in_review", outcome=None)
+        client = _PollClient([record], {"rev_1": "pending"})
+        with mock.patch.object(follow, "advance_case") as advance:
+            result = follow.poll_open_reviews(client)
+        advance.assert_not_called()
+        self.assertEqual(result["waiting"], ["AUTO-D01"])
+        self.assertEqual(result["moved"], [])
+
+    def test_approved_review_is_copied_forward(self):
+        record = SimpleNamespace(case_id="AUTO-D12", review_id="rev_12", status="in_review", outcome=None)
+        client = _PollClient([record], {"rev_12": "approved"})
+        with mock.patch.object(
+            follow, "advance_case", return_value={"case_id": "AUTO-D12", "filed": True}
+        ) as advance:
+            result = follow.poll_open_reviews(client)
+        advance.assert_called_once_with(client, "AUTO-D12")
+        self.assertEqual(result["waiting"], [])
+        self.assertEqual(result["moved"], [{"case_id": "AUTO-D12", "filed": True}])
+
+    def test_approved_unfiled_draft_is_filed_without_another_peek(self):
+        record = SimpleNamespace(case_id="AUTO-D03", review_id="rev_3", status="approved", outcome="approved")
+        client = _PollClient([], {"rev_3": "pending"})
+        client.stores.output = _ReviewOutput(approved=[record])
+        with mock.patch.object(
+            follow, "advance_case", return_value={"case_id": "AUTO-D03", "filed": True}
+        ) as advance:
+            follow.poll_open_reviews(client)
+        advance.assert_called_once_with(client, "AUTO-D03")
+
+    def test_duplicate_rows_for_one_case_are_checked_once(self):
+        first = SimpleNamespace(case_id="AUTO-D02", review_id="rev_a", status="in_review", outcome=None)
+        second = SimpleNamespace(case_id="AUTO-D02", review_id="rev_b", status="in_review", outcome=None)
+        client = _PollClient([first, second], {"rev_a": "pending", "rev_b": "approved"})
+        with mock.patch.object(follow, "advance_case") as advance:
+            result = follow.poll_open_reviews(client)
+        advance.assert_not_called()
+        self.assertEqual(result["waiting"], ["AUTO-D02"])
+
+
 class ServeTests(TestCase):
     def setUp(self):
+        env = mock.patch.dict("os.environ", {"FNOL_QUEUE_POLL_SECONDS": "0"})
+        env.start()
+        self.addCleanup(env.stop)
         self.servers = []
         real = follow.ThreadingHTTPServer
         servers = self.servers
@@ -325,7 +393,8 @@ class ServeLifecycleTests(TestCase):
         server = mock.MagicMock()
         server.serve_forever.side_effect = KeyboardInterrupt
         with mock.patch.object(follow, "ThreadingHTTPServer", return_value=server), mock.patch.dict(
-            "os.environ", {"FNOL_HTTP_HOST": "127.0.0.1", "FNOL_HTTP_PORT": "0"}
+            "os.environ",
+            {"FNOL_HTTP_HOST": "127.0.0.1", "FNOL_HTTP_PORT": "0", "FNOL_QUEUE_POLL_SECONDS": "0"},
         ), redirect_stdout(io.StringIO()):
             follow.serve()
         server.server_close.assert_called_once()
@@ -335,8 +404,8 @@ class ServeLifecycleTests(TestCase):
 
         server = mock.MagicMock()
         server.serve_forever.side_effect = KeyboardInterrupt
-        with mock.patch("http.server.ThreadingHTTPServer", return_value=server), redirect_stdout(
-            io.StringIO()
-        ):
+        with mock.patch("http.server.ThreadingHTTPServer", return_value=server), mock.patch.dict(
+            "os.environ", {"FNOL_QUEUE_POLL_SECONDS": "0"}
+        ), redirect_stdout(io.StringIO()):
             runpy.run_module("fnol_analyst.follow", run_name="__main__")
         server.server_close.assert_called_once()

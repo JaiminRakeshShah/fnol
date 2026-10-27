@@ -157,6 +157,20 @@ class QueueRowsTests(unittest.TestCase):
         self.assertIsNone(rows[1]["draft_status"])
         self.assertEqual(rows[1]["reviewer"], "alice")
 
+    def test_queue_keeps_one_row_per_case(self):
+        reviews = [
+            {"id": "rev_new", "case_id": "AUTO-D03", "draft": "{}", "hash": "h2",
+             "status": "pending", "reviewer": None},
+            {"id": "rev_old", "case_id": "AUTO-D03", "draft": "{}", "hash": "h1",
+             "status": "rejected", "reviewer": "bob"},
+            {"id": "rev_other", "case_id": "AUTO-D01", "draft": "{}", "hash": "h0",
+             "status": "approved", "reviewer": "alice"},
+        ]
+        with mock.patch.object(review_page, "_store_rows", return_value=[]):
+            rows = queue_rows(FakeDb(reviews))
+        self.assertEqual([row["review_id"] for row in rows], ["rev_new", "rev_other"])
+        self.assertEqual(len(rows), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

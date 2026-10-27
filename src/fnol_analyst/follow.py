@@ -1,8 +1,13 @@
-"""Webhook the reviewer calls after a human decision.
+"""Analyst process that stays running.
 
-The analyst listens. It does not approve. One POST copies that decision
-onto the draft and, for an approval, files the claim. A 5-minute poll
-copies any decision the webhook did not deliver.
+Every poll does two things. It queues input revisions that have no review yet:
+policy, rules, citations, the draft, the Gemma summary, and POST /v1/reviews.
+Then it reads every open review. A decision that is still pending stays put.
+An approval is copied onto the draft and filed. A rejection is copied and not
+filed. The poll does not approve.
+
+The HTTP server is the same copy-forward step, called once when the reviewer
+can reach this process.
 """
 
 from __future__ import annotations
@@ -10,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import threading
+import time
 import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -130,6 +136,106 @@ def notify_analyst(case_id: str) -> None:
         print(f"analyst webhook failed: {exc}", flush=True)
 
 
+def queue_interval() -> float:
+    """Seconds between queue passes. Zero or below turns the loop off."""
+    raw = os.environ.get("FNOL_QUEUE_POLL_SECONDS", "30").strip()
+    try:
+        return float(raw)
+    except ValueError:
+        return 30.0
+
+
+def run_queue_pass() -> list[dict[str, Any]]:
+    """Queue every ingested case that is not already on the reviewer page."""
+    with AnalystClient() as client:
+        rows = client.enqueue_pending()
+    for row in rows:
+        if row.get("action") != "skipped":
+            print(f"queue {row}", flush=True)
+    return rows
+
+
+def _review_decision(client: AnalystClient, review_id: str) -> str | None:
+    """Read the human decision without writing a trace row for a still-pending review."""
+    status, body = client._call_transport(
+        "GET",
+        f"{client.mock_url.rstrip('/')}/v1/reviews/{review_id}",
+        None,
+        None,
+    )
+    if status != 200 or not isinstance(body, dict):
+        raise AnalystError("review_poll_failed", f"review poll failed with HTTP {status}")
+    decision = body.get("status")
+    return decision if isinstance(decision, str) else None
+
+
+def poll_open_reviews(client: AnalystClient) -> dict[str, Any]:
+    """Copy forward any open review a person has already decided.
+
+    Pending reviews are only counted. Approved and rejected reviews go through
+    ``advance_case``, which files an approval and leaves a rejection unfiled.
+    """
+    waiting: list[str] = []
+    moved: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    records = list(client.stores.output.in_review()) + list(client.stores.output.approved_unfiled())
+    for record in records:
+        case_id = record.case_id
+        if not case_id or case_id in seen:
+            continue
+        seen.add(case_id)
+        try:
+            if record.status == "approved" and record.outcome == "approved":
+                moved.append(advance_case(client, case_id))
+                continue
+            if not record.review_id:
+                moved.append({"case_id": case_id, "error": "review_missing"})
+                continue
+            decision = _review_decision(client, record.review_id)
+            if decision in {"approved", "rejected"}:
+                moved.append(advance_case(client, case_id))
+            else:
+                waiting.append(case_id)
+        except Exception as exc:
+            code = getattr(exc, "error_code", None) or exc.__class__.__name__
+            moved.append({"case_id": case_id, "error": code})
+    print(f"review poll: {len(waiting)} waiting {waiting}", flush=True)
+    for row in moved:
+        print(f"review poll {row}", flush=True)
+    return {"waiting": waiting, "moved": moved}
+
+
+def run_review_pass() -> dict[str, Any]:
+    """One look at the open reviews."""
+    with AnalystClient() as client:
+        return poll_open_reviews(client)
+
+
+def queue_loop(interval: float) -> None:
+    """Queue new revisions and copy human decisions forward until the process stops."""
+    while True:
+        try:
+            run_queue_pass()
+        except Exception as exc:
+            print(f"queue pass failed: {exc}", flush=True)
+        try:
+            run_review_pass()
+        except Exception as exc:
+            print(f"review poll failed: {exc}", flush=True)
+        time.sleep(interval)
+
+
+def start_queue_loop() -> None:
+    interval = queue_interval()
+    if interval <= 0:
+        print("queue loop off", flush=True)
+        return
+    threading.Thread(
+        target=queue_loop, args=(interval,), name="fnol-queue", daemon=True
+    ).start()
+    print(f"queue and review poll every {interval:g}s", flush=True)
+
+
 def serve(host: str | None = None, port: int | None = None) -> None:
     """Listen for the reviewer webhook until the process is stopped."""
     host = host or os.environ.get("FNOL_HTTP_HOST", "0.0.0.0")
@@ -177,8 +283,7 @@ def serve(host: str | None = None, port: int | None = None) -> None:
             self._json(status, result)
 
     server = ThreadingHTTPServer((host, port), Handler)
-    stop = threading.Event()
-    poller = threading.Thread(target=_poll_forever, args=(stop,), name="review-poll", daemon=True)
+    start_queue_loop()
     print(f"analyst webhook on http://{host}:{port}", flush=True)
     poller.start()
     try:

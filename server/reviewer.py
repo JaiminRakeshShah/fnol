@@ -188,10 +188,23 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     from fnol_foundation.db import ensure_ready, using_postgres
 
+    aws_only = os.environ.get("FNOL_REVIEWER_AWS_ONLY", "").strip() in {"1", "true", "yes"}
     if using_postgres():
         ensure_ready()
+    elif aws_only or os.environ.get("FNOL_ALLOW_LOCAL_STATE", "").strip() not in {"1", "true", "yes"}:
+        # Default CLI path is AWS Postgres. Local SQLite needs an explicit opt-in
+        # so a leftover .state/mock.sqlite cannot silently drive the demo UI.
+        print(
+            "reviewer: refusing local SQLite. "
+            "Run: AWS_PROFILE=atharv uv run --locked --group postgres python tools/reviewer_aws.py\n"
+            "Or set FNOL_ALLOW_LOCAL_STATE=1 for an intentional local mock.",
+            file=sys.stderr,
+            flush=True,
+        )
+        return 2
     server = create_server(host=args.host, port=args.port, state=args.state)
-    print(f"reviewer HTTP on http://{args.host}:{args.port}", flush=True)
+    backend = "postgres" if using_postgres() else "sqlite"
+    print(f"reviewer HTTP on http://{args.host}:{args.port} ({backend})", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:

@@ -3,8 +3,13 @@
 from __future__ import annotations
 
 import sys
+from pathlib import Path
 
-from fnol_foundation.db import database_url
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT / "src") not in sys.path:
+    sys.path.insert(0, str(ROOT / "src"))
+
+from fnol_foundation.db import database_url  # noqa: E402
 
 TABLES = (
     "input.input_revisions",
@@ -26,7 +31,14 @@ def main() -> int:
     if not url:
         print("PostgreSQL is not configured", file=sys.stderr)
         return 1
-    import psycopg
+    try:
+        import psycopg  # type: ignore[import-not-found]
+    except ImportError:
+        print(
+            "psycopg is required; install with: uv sync --locked --group postgres",
+            file=sys.stderr,
+        )
+        return 1
 
     statement = "TRUNCATE TABLE " + ", ".join(TABLES) + " RESTART IDENTITY CASCADE"
     with psycopg.connect(url, connect_timeout=15, autocommit=True) as conn:

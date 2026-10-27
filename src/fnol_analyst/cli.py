@@ -5,6 +5,7 @@
   route          step 3 through the rules server (optional --case-id)
   cite           step 4 through the citations server (optional --case-id)
   prepare        steps 1-4, then build and export every draft
+  queue          policy through review for every ingested case that has none
   build          steps 5-8 for one case or all cases
   export         write the contract JSON array
   submit         step 9: POST /v1/reviews for a stored draft
@@ -45,6 +46,7 @@ def main(argv=None) -> int:
     prepare = sub.add_parser("prepare")
     prepare.add_argument("--out", default="submissions/results.json")
     prepare.add_argument("--workers", type=int, default=3)
+    sub.add_parser("queue")
     build = sub.add_parser("build")
     build.add_argument("--case-id", default=None)
     export = sub.add_parser("export")
@@ -103,6 +105,9 @@ def _run(client: AnalystClient, args) -> int:
             ],
             "exported": str(path),
         })
+        return 0
+    if args.command == "queue":
+        _print(client.enqueue_pending())
         return 0
     if args.command == "build":
         drafts = [client.build(args.case_id)] if args.case_id else client.build_all()
