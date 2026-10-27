@@ -24,8 +24,6 @@ from urllib.parse import urlparse
 
 from fnol_analyst.client import AnalystClient, AnalystError
 
-POLL_SECONDS = 300
-
 
 def advance_case(client: AnalystClient, case_id: str) -> dict[str, Any]:
     """Copy one human decision forward. File only an approval."""
@@ -46,74 +44,6 @@ def advance_case(client: AnalystClient, case_id: str) -> dict[str, Any]:
     except AnalystError as exc:
         return {"case_id": case_id, "status": "approved", "error": exc.error_code}
     return {"case_id": case_id, "status": filed.get("status", "approved"), "filed": True}
-
-
-def poll_interval_seconds() -> float:
-    """How often to look for a decision the webhook missed. Default is 5 minutes."""
-    raw = os.environ.get("FNOL_REVIEW_POLL_SECONDS", str(POLL_SECONDS)).strip()
-    try:
-        value = float(raw)
-    except ValueError:
-        return float(POLL_SECONDS)
-    if value <= 0:
-        return float(POLL_SECONDS)
-    return value
-
-
-def _peek_review(client: AnalystClient, review_id: str) -> str | None:
-    """Read the human decision without writing a trace row."""
-    peek = getattr(client, "peek_review", None)
-    if peek is not None:
-        return peek(review_id)
-    status, body = client._call_transport(
-        "GET",
-        f"{client.mock_url}/v1/reviews/{review_id}",
-        None,
-        None,
-    )
-    if status != 200 or not isinstance(body, dict):
-        return None
-    value = body.get("status")
-    return value if isinstance(value, str) else None
-
-
-def poll_open_reviews(client: AnalystClient) -> list[dict[str, Any]]:
-    """Copy decisions the webhook missed. A review still waiting is left alone."""
-    results = []
-    for record in client.stores.output.in_review():
-        if not record.review_id:
-            continue
-        try:
-            decision = _peek_review(client, record.review_id)
-        except Exception as exc:
-            results.append({"case_id": record.case_id, "error": str(exc)})
-            continue
-        if decision not in {"approved", "rejected"}:
-            continue
-        try:
-            results.append(advance_case(client, record.case_id))
-        except Exception as exc:
-            results.append({"case_id": record.case_id, "error": str(exc)})
-    for record in client.stores.output.approved_unfiled():
-        try:
-            results.append(advance_case(client, record.case_id))
-        except Exception as exc:
-            results.append({"case_id": record.case_id, "error": str(exc)})
-    return results
-
-
-def _poll_forever(stop: threading.Event) -> None:
-    interval = poll_interval_seconds()
-    print(f"review poll every {interval:.0f}s", flush=True)
-    while not stop.is_set():
-        try:
-            with AnalystClient() as client:
-                for result in poll_open_reviews(client):
-                    print(result, flush=True)
-        except Exception as exc:
-            print(f"review poll failed: {exc}", flush=True)
-        if stop.wait(interval):
-            return
 
 
 def notify_analyst(case_id: str) -> None:
@@ -285,13 +215,11 @@ def serve(host: str | None = None, port: int | None = None) -> None:
     server = ThreadingHTTPServer((host, port), Handler)
     start_queue_loop()
     print(f"analyst webhook on http://{host}:{port}", flush=True)
-    poller.start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         pass
     finally:
-        stop.set()
         server.server_close()
 
 
