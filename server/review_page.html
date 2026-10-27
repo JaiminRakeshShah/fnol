@@ -276,7 +276,7 @@ function render() {
   const fresh = state.loaded && !state.error;
   const pendingCount = state.rows.filter((r) => r.status === "pending").length;
   document.getElementById("count").textContent =
-    fresh ? `${pendingCount} pending · ${state.rows.length} total` : "";
+    fresh ? `${pendingCount} pending · ${state.rows.length} cases` : "";
 
   if (state.error) {
     list.replaceChildren(el("div", { class: "notice error" },

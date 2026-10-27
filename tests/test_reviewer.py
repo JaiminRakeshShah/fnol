@@ -354,8 +354,11 @@ class ReviewerMainTests(unittest.TestCase):
         if serve_forever is not None:
             fake_server.serve_forever.side_effect = serve_forever
         out = io.StringIO()
+        merged = {"FNOL_ALLOW_LOCAL_STATE": "1"}
+        if env:
+            merged.update(env)
         with (
-            mock.patch.dict(os.environ, env or {}),
+            mock.patch.dict(os.environ, merged),
             mock.patch("fnol_foundation.db.using_postgres", return_value=postgres),
             mock.patch("fnol_foundation.db.ensure_ready") as ensure_ready,
             mock.patch.object(reviewer, "create_server", return_value=fake_server) as create,
@@ -373,7 +376,7 @@ class ReviewerMainTests(unittest.TestCase):
         create.assert_called_once_with(host="127.0.0.1", port=9099, state=Path("/tmp/mock.sqlite"))
         server.serve_forever.assert_called_once_with()
         server.server_close.assert_called_once_with()
-        self.assertIn("reviewer HTTP on http://127.0.0.1:9099", output)
+        self.assertIn("reviewer HTTP on http://127.0.0.1:9099 (sqlite)", output)
 
     def test_main_defaults_come_from_the_environment(self):
         _code, _server, create, _ready, _out = self._run(
@@ -389,12 +392,31 @@ class ReviewerMainTests(unittest.TestCase):
         ensure_ready.assert_called_once_with()
         server.server_close.assert_called_once_with()
 
+    def test_main_refuses_sqlite_without_explicit_local_opt_in(self):
+        fake_server = mock.Mock()
+        err = io.StringIO()
+        with (
+            mock.patch.dict(os.environ, {"FNOL_ALLOW_LOCAL_STATE": "0"}, clear=False),
+            mock.patch("fnol_foundation.db.using_postgres", return_value=False),
+            mock.patch.object(reviewer, "create_server", return_value=fake_server) as create,
+            contextlib.redirect_stderr(err),
+        ):
+            # Force the opt-in off even if the process inherited ALLOW_LOCAL.
+            with mock.patch.dict(os.environ, {"FNOL_ALLOW_LOCAL_STATE": ""}):
+                code = reviewer.main(["--host", "127.0.0.1", "--port", "9099"])
+        self.assertEqual(code, 2)
+        create.assert_not_called()
+        self.assertIn("refusing local SQLite", err.getvalue())
+
     def test_script_exits_zero_after_interrupt(self):
         script = ROOT / "server" / "reviewer.py"
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.object(ThreadingHTTPServer, "serve_forever", side_effect=KeyboardInterrupt):
-                with self.assertRaises(SystemExit) as ctx:
-                    run_as_main(script, ["--host", "127.0.0.1", "--port", "0", "--state", f"{tmp}/m.sqlite"])
+            with mock.patch.dict(os.environ, {"FNOL_ALLOW_LOCAL_STATE": "1"}):
+                with mock.patch.object(ThreadingHTTPServer, "serve_forever", side_effect=KeyboardInterrupt):
+                    with self.assertRaises(SystemExit) as ctx:
+                        run_as_main(
+                            script, ["--host", "127.0.0.1", "--port", "0", "--state", f"{tmp}/m.sqlite"]
+                        )
         self.assertEqual(ctx.exception.code, 0)
 
 

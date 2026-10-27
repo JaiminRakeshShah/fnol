@@ -109,14 +109,26 @@ def _gemma_for(review_case: str, revision, paragraphs) -> str | None:
 
 
 def queue_rows(db) -> list[dict]:
-    """Every review, newest first, with the draft it approves and Gemma's paragraph."""
+    """One row per case: the newest review, with its draft and Gemma paragraph.
+
+    Older duplicate reviews for the same case_id are omitted so the queue
+    counts cases, not leftover tickets from resubmits.
+    """
     reviews = db.execute(
         "SELECT id, case_id, draft, hash, status, reviewer FROM reviews ORDER BY rowid DESC"
     ).fetchall()
-    stored = _stored_drafts(sorted({r["hash"] for r in reviews if r["hash"]}))
-    gemma = _gemma_paragraphs(sorted({r["case_id"] for r in reviews if r["case_id"]}))
-    rows = []
+    latest = []
+    seen = set()
     for review in reviews:
+        case_id = review["case_id"]
+        if not case_id or case_id in seen:
+            continue
+        seen.add(case_id)
+        latest.append(review)
+    stored = _stored_drafts(sorted({r["hash"] for r in latest if r["hash"]}))
+    gemma = _gemma_paragraphs(sorted(seen))
+    rows = []
+    for review in latest:
         body = _draft_body(review["draft"])
         record = stored.get(review["hash"]) or {}
         revision = record.get("input_revision")
