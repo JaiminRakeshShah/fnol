@@ -6,15 +6,22 @@ Do **not** use bare `tools/runtime.py approve` for AWS unless `FNOL_DATABASE_URL
 
 ## Prerequisites
 
-- AWS CLI + Session Manager plugin
+- AWS CLI v2 + Session Manager plugin
 - SSO profile (examples use `atharv`)
-- uv with the `postgres` group
+- uv with the `postgres` (and on ECS, `aws`) group
 
 ```sh
 aws sso login --profile atharv
 ```
 
 Ignore `aws login` errors on profile `default` if that profile has access keys. Use `AWS_PROFILE=atharv`.
+
+If `ecs execute-command` says `SessionManagerPlugin is not found`, the binary is often installed but not on `PATH`:
+
+```sh
+export PATH="/usr/local/sessionmanagerplugin/bin:$PATH"
+# optional permanent: add that line to ~/.zshrc
+```
 
 ## 1. Start the AWS-backed reviewer
 
@@ -94,29 +101,82 @@ Replace `REVIEW_ID` with a real `rev_…` value. Expected body includes `"status
 
 Re-list pending; that review should be gone. Grafana refreshes about every minute.
 
-## 5. Create pending reviews on AWS (if queue is empty)
+## 5. Refill AWS after blank (ECS analyst): prepare + submit
 
-Laptop `python -m fnol_analyst` without AWS env does **not** write the AWS DB.
+Laptop `python -m fnol_analyst` **does not** write the AWS DB. Run prepare/submit **inside** the Fargate analyst task.
 
-Exec into the analyst task, then prepare/submit there:
+There is no `submit --all`. `prepare` covers all cases in one command; `submit` needs `--case-id` (use the loop below).
+
+### A. Open an ECS shell on the analyst task
 
 ```sh
-aws ecs list-tasks --cluster fnol --service-name fnol-analyst \
-  --region us-east-1 --profile atharv
+export PATH="/usr/local/sessionmanagerplugin/bin:$PATH"
 
-aws ecs execute-command --cluster fnol --task TASK_ID \
+TASK=$(aws ecs list-tasks --cluster fnol --service-name analyst \
+  --desired-status RUNNING --region us-east-1 --profile atharv \
+  --query 'taskArns[0]' --output text)
+
+echo "$TASK"   # must be a task ARN, not None
+
+aws ecs execute-command --cluster fnol --task "$TASK" \
   --container analyst --interactive --command "/bin/sh" \
   --region us-east-1 --profile atharv
 ```
 
-Inside the task:
+You should see a `#` prompt inside the container.
+
+### B. Process all 12 cases (ingest → policy → route → cite → build)
+
+Do **not** use bare `python` (missing `boto3`). Use the same uv groups as the task definition:
 
 ```sh
-python -m fnol_analyst prepare
-python -m fnol_analyst submit --case-id AUTO-D02
+uv run --locked --group aws --group postgres --no-dev python -m fnol_analyst prepare
 ```
 
-Then go back to steps 3–4 on your laptop against `8090`.
+`Bytecode compiled …` is only uv loading deps. Wait for JSON like:
+
+```text
+{
+  "cases": 12,
+  "drafts": [ { "draft_id": "draft_…", "case_id": "AUTO-D01", "draft_hash": "…" }, … ],
+  "exported": "submissions/results.json"
+}
+```
+
+- **`draft_id`** — local draft record id (filing / idempotency).
+- **`draft_hash`** — fingerprint of the exact draft; human approval is bound to this hash.
+
+`prepare` alone updates Grafana pipeline data. It does **not** put cases in the human review queue.
+
+### C. Put all 12 drafts into the review queue
+
+Still in the ECS shell (no `submit --all` in the CLI):
+
+```sh
+for c in AUTO-D01 AUTO-D02 AUTO-D03 AUTO-D04 AUTO-D05 AUTO-D06 \
+         AUTO-D07 AUTO-D08 AUTO-D09 AUTO-D10 AUTO-D11 AUTO-D12; do
+  uv run --locked --group aws --group postgres --no-dev \
+    python -m fnol_analyst submit --case-id "$c"
+done
+```
+
+Each case should print a small JSON with `review_id` / `status`. Single case example:
+
+```sh
+uv run --locked --group aws --group postgres --no-dev \
+  python -m fnol_analyst submit --case-id AUTO-D02
+```
+
+### D. Back on your laptop — list and decide
+
+With `reviewer_aws.py` still running (§1):
+
+```sh
+curl -s -H "X-Fnol-Roles: Claims.Reviewer" \
+  http://127.0.0.1:8090/v1/pending | python3 -m json.tool
+```
+
+Then approve/reject (§4).
 
 ## Quick demo picks
 
@@ -192,7 +252,7 @@ curl -s -H "X-Fnol-Roles: Claims.Reviewer" \
   http://127.0.0.1:8090/v1/pending | python3 -m json.tool
 ```
 
-Expect `[]`. Re-`prepare` / `submit` from the analyst ECS task to refill.
+Expect `[]`. Then refill with §5 (ECS `prepare` + submit loop).
 
 ### Local mock only (does **not** clear AWS)
 

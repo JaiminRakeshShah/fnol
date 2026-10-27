@@ -31,7 +31,14 @@ def main() -> int:
     if not url:
         print("PostgreSQL is not configured", file=sys.stderr)
         return 1
-    import psycopg
+    try:
+        import psycopg  # type: ignore[import-not-found]
+    except ImportError:
+        print(
+            "psycopg is required; install with: uv sync --locked --group postgres",
+            file=sys.stderr,
+        )
+        return 1
 
     statement = "TRUNCATE TABLE " + ", ".join(TABLES) + " RESTART IDENTITY CASCADE"
     with psycopg.connect(url, connect_timeout=15, autocommit=True) as conn:
